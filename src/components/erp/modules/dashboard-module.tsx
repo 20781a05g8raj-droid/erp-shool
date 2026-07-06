@@ -8,11 +8,12 @@ import {
 } from "recharts";
 import {
   Users, GraduationCap, Wallet, TrendingUp, CalendarCheck, BookOpen,
-  Bus, Megaphone, AlertCircle, ArrowUpRight, FileText, Clock,
+  Bus, Megaphone, AlertCircle, ArrowUpRight, FileText, Clock, RefreshCw,
 } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import { StatsCard } from "@/components/erp/stats-card";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { ROLE_LABELS } from "@/types";
@@ -54,15 +55,23 @@ export function DashboardModule() {
 
   useEffect(() => {
     fetch("/api/dashboard")
-      .then((r) => r.json())
-      .then((d) => setData(d))
-      .catch(() => {})
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => {
+        if (!d || !d.stats) throw new Error("Invalid data");
+        setData(d);
+      })
+      .catch(() => {
+        setData(null);
+      })
       .finally(() => setLoading(false));
   }, []);
 
   if (!user) return null;
 
-  if (loading || !data) {
+  if (loading) {
     return (
       <div className="space-y-6">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -75,6 +84,26 @@ export function DashboardModule() {
             <Card key={i} className="h-80 animate-pulse bg-muted/40" />
           ))}
         </div>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-center">
+        <div className="w-20 h-20 rounded-2xl bg-amber-500/10 flex items-center justify-center mb-5">
+          <AlertCircle className="w-10 h-10 text-amber-500" />
+        </div>
+        <h3 className="text-lg font-semibold mb-1.5">Dashboard data unavailable</h3>
+        <p className="text-sm text-muted-foreground max-w-sm mb-5">
+          {user.role === "super_admin"
+            ? "Super Admin doesn't have a school-specific dashboard. Use the Schools module to manage all schools on the platform."
+            : "Unable to load dashboard data. Please try refreshing the page."}
+        </p>
+        <Button variant="outline" onClick={() => window.location.reload()}>
+          <RefreshCw className="w-4 h-4 mr-2" />
+          Refresh
+        </Button>
       </div>
     );
   }
