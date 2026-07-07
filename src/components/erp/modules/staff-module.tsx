@@ -571,7 +571,7 @@ export function StaffModule() {
                       >
                         {s.status === "on_leave"
                           ? "On Leave"
-                          : s.status.charAt(0).toUpperCase() + s.status.slice(1)}
+                          : (s.status || "active").charAt(0).toUpperCase() + (s.status || "active").slice(1)}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
@@ -900,7 +900,7 @@ export function StaffModule() {
                     >
                       {detail.status === "on_leave"
                         ? "On Leave"
-                        : detail.status.charAt(0).toUpperCase() + detail.status.slice(1)}
+                        : (detail.status || "active").charAt(0).toUpperCase() + (detail.status || "active").slice(1)}
                     </Badge>
                     {detail.leaveSummary.onLeaveToday && (
                       <Badge variant="outline" className="bg-amber-500/10 text-amber-600 dark:text-amber-400">
@@ -1041,7 +1041,7 @@ export function StaffModule() {
                           variant="outline"
                           className={STATUS_COLORS[l.status] || "bg-muted text-muted-foreground"}
                         >
-                          {l.status.charAt(0).toUpperCase() + l.status.slice(1)}
+                          {(l.status || "pending").charAt(0).toUpperCase() + (l.status || "pending").slice(1)}
                         </Badge>
                       </div>
                     ))}
@@ -1086,7 +1086,7 @@ export function StaffModule() {
                           variant="outline"
                           className={STATUS_COLORS[p.status] || "bg-muted text-muted-foreground"}
                         >
-                          {p.status.charAt(0).toUpperCase() + p.status.slice(1)}
+                          {(p.status || "pending").charAt(0).toUpperCase() + (p.status || "pending").slice(1)}
                         </Badge>
                       </div>
                     ))}
