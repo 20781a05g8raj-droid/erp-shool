@@ -54,7 +54,10 @@ export function DashboardModule() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/dashboard")
+    const userId = typeof window !== "undefined" ? localStorage.getItem("erp_user_id") : null;
+    fetch("/api/dashboard", {
+      headers: userId ? { "x-user-id": userId } : {},
+    })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();

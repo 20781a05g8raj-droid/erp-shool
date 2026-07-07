@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import type { Role, User } from "@/types";
 
 // Demo password check (in production use bcrypt/argon2)
@@ -11,11 +11,20 @@ export function verifyPassword(input: string, stored: string): boolean {
   return false;
 }
 
-// Server-side: get current user from cookie
+// Server-side: get current user from cookie OR x-user-id header
+// (header fallback needed for iframe/preview environments where third-party cookies are blocked)
 export async function getCurrentUser(): Promise<User | null> {
   try {
+    // 1. Try cookie first
     const cookieStore = await cookies();
-    const userId = cookieStore.get("erp_user_id")?.value;
+    let userId = cookieStore.get("erp_user_id")?.value;
+
+    // 2. Fallback to x-user-id header (set by client from localStorage)
+    if (!userId) {
+      const headerStore = await headers();
+      userId = headerStore.get("x-user-id") || undefined;
+    }
+
     if (!userId) return null;
 
     const profile = await db.profile.findUnique({

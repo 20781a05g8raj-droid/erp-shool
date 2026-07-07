@@ -47,6 +47,8 @@ export function LoginScreen() {
         toast.error(data.error || "Login failed");
         return;
       }
+      // Store user ID in localStorage for iframe/preview compatibility (third-party cookie workaround)
+      localStorage.setItem("erp_user_id", data.user.id);
       setUser(data.user);
       toast.success(`Welcome back, ${data.user.name}!`);
     } catch {

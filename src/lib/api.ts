@@ -1,12 +1,15 @@
 // Shared API fetcher for client components
+// Automatically includes x-user-id header from localStorage for iframe/preview compatibility
 export async function apiFetch<T = unknown>(
   url: string,
   options?: RequestInit
 ): Promise<T> {
+  const userId = typeof window !== "undefined" ? localStorage.getItem("erp_user_id") : null;
   const res = await fetch(url, {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      ...(userId ? { "x-user-id": userId } : {}),
       ...options?.headers,
     },
   });
@@ -15,6 +18,13 @@ export async function apiFetch<T = unknown>(
     throw new Error(data.error || `Request failed with status ${res.status}`);
   }
   return data as T;
+}
+
+// Helper to get auth headers for raw fetch calls
+export function getAuthHeaders(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  const userId = localStorage.getItem("erp_user_id");
+  return userId ? { "x-user-id": userId } : {};
 }
 
 export function formatDate(dateStr?: string | null): string {

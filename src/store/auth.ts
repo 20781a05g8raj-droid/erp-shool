@@ -23,12 +23,16 @@ export const useAuthStore = create<AuthState>((set) => ({
   setModule: (currentModule) => set({ currentModule }),
   logout: async () => {
     await fetch("/api/auth/logout", { method: "POST" });
+    if (typeof window !== "undefined") localStorage.removeItem("erp_user_id");
     set({ user: null, currentModule: "dashboard" });
   },
   fetchUser: async () => {
     try {
       set({ loading: true });
-      const res = await fetch("/api/auth/me");
+      const userId = typeof window !== "undefined" ? localStorage.getItem("erp_user_id") : null;
+      const res = await fetch("/api/auth/me", {
+        headers: userId ? { "x-user-id": userId } : {},
+      });
       const data = await res.json();
       set({ user: data.user, loading: false });
     } catch {
