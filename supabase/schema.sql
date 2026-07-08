@@ -7,6 +7,7 @@
 -- ============================================================================
 -- 0. CLEANUP (drop existing — so you can re-run without errors)
 -- ============================================================================
+-- Drop tables (IF EXISTS prevents errors if they don't exist yet)
 DROP TABLE IF EXISTS certificates CASCADE;
 DROP TABLE IF EXISTS school_events CASCADE;
 DROP TABLE IF EXISTS notices CASCADE;
@@ -36,7 +37,7 @@ DROP TABLE IF EXISTS classes CASCADE;
 DROP TABLE IF EXISTS profiles CASCADE;
 DROP TABLE IF EXISTS schools CASCADE;
 
--- Drop enums
+-- Drop enums (CASCADE handles any dependencies)
 DROP TYPE IF EXISTS user_role CASCADE;
 DROP TYPE IF EXISTS student_status CASCADE;
 DROP TYPE IF EXISTS staff_type CASCADE;
@@ -52,7 +53,7 @@ DROP TYPE IF EXISTS certificate_type CASCADE;
 DROP TYPE IF EXISTS notice_audience CASCADE;
 DROP TYPE IF EXISTS payroll_status CASCADE;
 
--- Drop functions
+-- Drop functions (IF EXISTS prevents errors)
 DROP FUNCTION IF EXISTS update_updated_at() CASCADE;
 DROP FUNCTION IF EXISTS handle_new_user() CASCADE;
 DROP FUNCTION IF EXISTS get_current_school_id() CASCADE;
@@ -61,14 +62,10 @@ DROP FUNCTION IF EXISTS is_admin() CASCADE;
 DROP FUNCTION IF EXISTS get_current_student_id() CASCADE;
 DROP FUNCTION IF EXISTS get_current_staff_id() CASCADE;
 
--- Drop triggers
+-- Drop trigger on auth.users (safe — IF EXISTS)
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
-DROP TRIGGER IF EXISTS trg_schools_updated ON schools;
-DROP TRIGGER IF EXISTS trg_profiles_updated ON profiles;
-DROP TRIGGER IF EXISTS trg_staff_updated ON staff;
-DROP TRIGGER IF EXISTS trg_students_updated ON students;
 
--- Drop storage buckets (will recreate)
+-- Drop storage buckets if they exist
 DELETE FROM storage.buckets WHERE id IN ('student-photos','staff-photos','book-covers','homework-attachments','documents');
 
 -- ============================================================================
