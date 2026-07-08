@@ -27,6 +27,7 @@ const NoticesModule = dynamic(() => import("@/components/erp/modules/notices-mod
 const CertificatesModule = dynamic(() => import("@/components/erp/modules/certificates-module").then((m) => m.CertificatesModule), { loadingComponent: loading });
 const ReportsModule = dynamic(() => import("@/components/erp/modules/reports-module").then((m) => m.ReportsModule), { loadingComponent: loading });
 const SchoolsModule = dynamic(() => import("@/components/erp/modules/schools-module").then((m) => m.SchoolsModule), { loadingComponent: loading });
+const UsersModule = dynamic(() => import("@/components/erp/modules/users-module").then((m) => m.UsersModule), { loadingComponent: loading });
 
 export function ModuleRouter() {
   const { currentModule } = useAuthStore();
@@ -34,6 +35,8 @@ export function ModuleRouter() {
   switch (currentModule) {
     case "dashboard":
       return <DashboardModule />;
+    case "users":
+      return <UsersModule />;
     case "students":
       return <StudentsModule />;
     case "staff":

@@ -1,7 +1,7 @@
 import {
   LayoutDashboard, Users, GraduationCap, CalendarCheck, Clock, FileText,
   BookOpen, Wallet, Library, Bus, UserCog, Megaphone, Award, BarChart3,
-  Building2, School, type LucideIcon,
+  Building2, School, UserCircle, type LucideIcon,
 } from "lucide-react";
 import type { Role } from "@/types";
 
@@ -13,6 +13,7 @@ export interface NavItem {
 
 export const ALL_MODULES: NavItem[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { id: "users", label: "User Management", icon: UserCircle },
   { id: "students", label: "Students", icon: Users },
   { id: "staff", label: "Staff", icon: GraduationCap },
   { id: "classes", label: "Classes & Sections", icon: School },
@@ -32,12 +33,12 @@ export const ALL_MODULES: NavItem[] = [
 
 export const ROLE_MODULES: Record<Role, string[]> = {
   super_admin: [
-    "dashboard", "schools", "students", "staff", "classes", "attendance",
+    "dashboard", "schools", "users", "students", "staff", "classes", "attendance",
     "timetable", "exams", "homework", "fees", "library", "transport",
     "hr", "notices", "certificates", "reports",
   ],
   school_admin: [
-    "dashboard", "students", "staff", "classes", "attendance", "timetable",
+    "dashboard", "users", "students", "staff", "classes", "attendance", "timetable",
     "exams", "homework", "fees", "library", "transport", "hr", "notices",
     "certificates", "reports",
   ],

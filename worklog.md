@@ -997,3 +997,46 @@ Stage Summary:
   - "Create account" button ✅
   - Full flow: admin adds Priya → Priya signs up → sees student dashboard ("Good morning, Priya", 0% attendance, Student Portal) ✅
 - Lint: 0 errors
+
+---
+Task ID: USER-MGMT-1
+Agent: Main (Z.ai Code)
+Task: Admin User Management — unified interface to add/edit/delete all role-based user accounts.
+
+Work Log:
+- Created /api/users/route.ts (GET list with search+role filter, POST create) — admin only (school_admin, super_admin)
+- Created /api/users/[id]/route.ts (GET, PUT update, DELETE) — admin only, prevents self-deletion
+- GET returns enriched data: each profile + linkedInfo (student/staff name + admission/employee id)
+- POST creates profile with email, password, name, role (8 roles), phone, status, optional studentId/staffId link
+- PUT updates name, role, phone, status, password reset (optional), studentId/staffId link
+- DELETE removes profile (prevents admin from deleting themselves)
+- Added "users" module to navigation for school_admin and super_admin (with UserCircle icon, labeled "User Management")
+- Added UsersModule to module-router.tsx
+- Created users-module.tsx — full admin interface:
+  - PageHeader with "Add User" button
+  - 4 StatsCards: Total Users, Active, Teachers, Students
+  - Filter bar: search by name/email + role filter dropdown (All Roles + 8 role options)
+  - Users table: avatar+name+email, role badge (with role-specific icon), linked-to info (student/staff), phone, status badge, actions dropdown (Edit, Reset Password, Delete)
+  - "You" badge next to current admin's own row
+  - Add User dialog: Full Name, Email, Password, Phone, Role select (8 roles), Status select
+  - Edit User dialog: same fields, email read-only, password optional (leave blank to keep)
+  - Reset Password dialog: dedicated password reset with min 6 char validation
+  - Delete confirmation with AlertDialog (prevents accidental deletion)
+  - Empty state with CTA
+  - Framer Motion animations on rows
+
+Stage Summary:
+- API tests:
+  - GET /api/users → returns 11 users with linked info ✅
+  - POST /api/users → creates user with role (tested accountant) → 201 ✅
+  - Teacher role blocked from /api/users → 403 ✅
+- UI tests:
+  - Admin sidebar shows "User Management" ✅
+  - Stats: 11 Total Users, 11 Active, 1 Teacher, 3 Students ✅
+  - Table with 11 users, role badges, linked info, status ✅
+  - Add User dialog with all fields (Name, Email, Password, Phone, Role, Status) ✅
+  - Edit, Reset Password, Delete actions in dropdown ✅
+  - "You" badge on admin's own row ✅
+  - VLM rated: "professional and well-designed, clean modern layout, clear visual hierarchy"
+- Lint: 0 errors
+- Admin can now manage ALL user accounts from one place — add teachers, students, parents, staff, accountants, librarians, transport managers, HR, all from User Management module
