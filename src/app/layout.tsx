@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
@@ -20,6 +20,16 @@ export const metadata: Metadata = {
   description: "A premium, modern School ERP platform for managing students, staff, attendance, fees, library, transport, HR and more.",
   keywords: ["School ERP", "School Management", "Education", "ERP", "Student Information System"],
   authors: [{ name: "Gduniya" }],
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 5,
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#4f46e5" },
+    { media: "(prefers-color-scheme: dark)", color: "#1e1b3a" },
+  ],
 };
 
 export default function RootLayout({

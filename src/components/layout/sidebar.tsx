@@ -46,16 +46,14 @@ export function Sidebar({ mobileOpen, setMobileOpen, collapsed, setCollapsed }: 
         )}
       </AnimatePresence>
 
-      {/* Sidebar */}
-      <motion.aside
-        initial={false}
-        animate={{ width: sidebarWidth }}
-        transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+      {/* Sidebar — using plain aside (NOT motion.aside) to avoid Framer Motion 
+          overriding Tailwind transform classes on mobile */}
+      <aside
         className={cn(
           "fixed lg:sticky top-0 left-0 h-screen z-50 lg:z-30",
           "bg-sidebar/95 backdrop-blur-xl flex flex-col",
           "border-r border-sidebar-border",
-          "transform transition-transform duration-300 lg:transform-none",
+          "transition-[width,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
           "before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-primary/30 before:to-transparent",
           mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
         )}
@@ -69,19 +67,14 @@ export function Sidebar({ mobileOpen, setMobileOpen, collapsed, setCollapsed }: 
               <GraduationCap className="w-5 h-5 text-white relative" />
             </div>
             {!collapsed && (
-              <motion.div
-                initial={{ opacity: 0, x: -8 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: 0.25 }}
-                className="overflow-hidden"
-              >
+              <div className="overflow-hidden">
                 <div className="text-sm font-bold tracking-tight gradient-text whitespace-nowrap leading-tight">
                   EduFlow ERP
                 </div>
                 <div className="text-[10px] text-muted-foreground whitespace-nowrap font-medium">
                   Greenwood Intl.
                 </div>
-              </motion.div>
+              </div>
             )}
           </div>
           <button
@@ -153,7 +146,7 @@ export function Sidebar({ mobileOpen, setMobileOpen, collapsed, setCollapsed }: 
           })}
         </nav>
 
-        {/* ============== Collapse toggle (desktop) ============== */}
+        {/* ============== Collapse toggle (desktop only) ============== */}
         <div className="hidden lg:block px-2.5 py-2 border-t border-sidebar-border">
           <button
             onClick={() => setCollapsed(!collapsed)}
@@ -179,7 +172,7 @@ export function Sidebar({ mobileOpen, setMobileOpen, collapsed, setCollapsed }: 
           <div
             className={cn(
               "flex items-center gap-3 p-2 rounded-xl bg-sidebar-accent/40 border border-sidebar-border/50",
-              collapsed && "justify-center p-1.5"
+              collapsed && "lg:justify-center lg:p-1.5"
             )}
           >
             {/* Avatar with gradient ring */}
@@ -193,12 +186,7 @@ export function Sidebar({ mobileOpen, setMobileOpen, collapsed, setCollapsed }: 
             </div>
 
             {!collapsed && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.2 }}
-                className="flex-1 min-w-0"
-              >
+              <div className="flex-1 min-w-0">
                 <div className="text-xs font-semibold truncate leading-tight">{user.name}</div>
                 <div className="flex items-center gap-1 mt-0.5">
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
@@ -206,7 +194,7 @@ export function Sidebar({ mobileOpen, setMobileOpen, collapsed, setCollapsed }: 
                     {ROLE_LABELS[user.role]}
                   </span>
                 </div>
-              </motion.div>
+              </div>
             )}
 
             {!collapsed && (
@@ -219,10 +207,9 @@ export function Sidebar({ mobileOpen, setMobileOpen, collapsed, setCollapsed }: 
                 <LogOut className="w-[15px] h-[15px]" />
               </button>
             )}
-
           </div>
         </div>
-      </motion.aside>
+      </aside>
     </>
   );
 }

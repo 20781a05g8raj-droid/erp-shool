@@ -22,16 +22,16 @@ export function DashboardShell() {
   }
 
   return (
-    <div className="min-h-screen flex bg-background">
+    <div className="min-h-screen flex bg-background overflow-x-hidden">
       <Sidebar
         mobileOpen={mobileOpen}
         setMobileOpen={setMobileOpen}
         collapsed={collapsed}
         setCollapsed={setCollapsed}
       />
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 w-full">
         <Topbar onMenuClick={() => setMobileOpen(true)} />
-        <main className="flex-1 p-4 lg:p-6 overflow-x-hidden">
+        <main className="flex-1 p-3 sm:p-4 lg:p-6 overflow-x-hidden">
           <AnimatePresence mode="wait">
             <motion.div
               key={currentModule}
