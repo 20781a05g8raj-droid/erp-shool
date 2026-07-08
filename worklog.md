@@ -1040,3 +1040,36 @@ Stage Summary:
   - VLM rated: "professional and well-designed, clean modern layout, clear visual hierarchy"
 - Lint: 0 errors
 - Admin can now manage ALL user accounts from one place — add teachers, students, parents, staff, accountants, librarians, transport managers, HR, all from User Management module
+
+---
+Task ID: SUPABASE-SETUP-1
+Agent: Main (Z.ai Code)
+Task: Prepare Supabase database structure — SQL schema, RLS policies, storage buckets, client setup.
+
+Work Log:
+- Created /supabase/schema.sql (complete SQL file ~500 lines):
+  - 14 enum types (user_role, student_status, staff_type, fee_status, payment_method, attendance_status, leave_status, leave_type, exam_type, book_issue_status, event_type, certificate_type, notice_audience, payroll_status)
+  - 28 tables matching Prisma schema (schools, profiles, classes, sections, subjects, class_subjects, staff, students, student_attendance, staff_attendance, timetable_slots, exams, exam_results, homework, fee_structures, fee_items, student_fees, fee_payments, library_books, book_issues, transport_routes, vehicles, student_transport, staff_leaves, payrolls, notices, school_events, certificates)
+  - All foreign keys with proper cascade/delete behaviors
+  - Performance indexes on common query columns
+  - Triggers: auto-update updated_at, auto-create profile on auth.users insert
+  - Helper functions: get_current_school_id(), get_current_role(), is_admin(), get_current_student_id(), get_current_staff_id()
+  - RLS policies on EVERY table (role-based: super_admin sees all, school_admin sees own school, teacher sees assigned classes, student/parent sees own data, accountant manages fees, librarian manages library, transport_manager manages transport, hr manages staff/payroll)
+  - 5 storage buckets (student-photos, staff-photos, book-covers, homework-attachments, documents) with read/write policies
+  - Seed data: Greenwood International School record
+- Created /supabase/MIGRATION-GUIDE.md — step-by-step setup instructions
+- Created /.env.example — showing 3 required env vars
+- Created /src/lib/supabase/client.ts — browser-side Supabase client (uses NEXT_PUBLIC_ vars)
+- Created /src/lib/supabase/server.ts — server-side client (cookie-based via @supabase/ssr) + admin client (service role key, bypasses RLS)
+- Installed @supabase/supabase-js and @supabase/ssr packages
+
+Stage Summary:
+- Supabase structure fully prepared. User needs to:
+  1. Create Supabase project
+  2. Run supabase/schema.sql in SQL Editor
+  3. Create super admin user in Auth
+  4. Set 3 env vars in .env.local (URL, anon key, service role key)
+  5. Login and start using
+- Current Prisma + SQLite setup still works (both can coexist during migration)
+- RLS policies enforce: admin sees all school data, teacher can't edit timetable/staff, student/parent see only own data, accountant manages fees, etc.
+- All 28 tables ready with proper relationships, indexes, and security
