@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // GET — single student fee with payments
@@ -14,32 +14,38 @@ export async function GET(
 
   const { id } = await params;
 
-  const studentFee = await db.studentFee.findFirst({
-    where: {
-      id,
-      student: { schoolId: user.schoolId },
-    },
-    include: {
-      student: { include: { class: true } },
-      feeStructure: { include: { items: true } },
-      payments: { orderBy: { paymentDate: "desc" } },
-    },
-  });
+  const { data: studentFee, error } = await supabaseAdmin
+    .from("student_fees")
+    .select(
+      "*, students!inner(id, school_id, first_name, last_name, admission_number, classes(id, name)), fee_structures(*, fee_items(*)), fee_payments(*)"
+    )
+    .eq("id", id)
+    .eq("students.school_id", user.schoolId)
+    .maybeSingle();
 
-  if (!studentFee) {
+  if (error || !studentFee) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
+
+  // Sort payments desc by payment_date
+  const payments = (studentFee.fee_payments as Array<Record<string, unknown>>) || [];
+  payments.sort((a, b) => {
+    const pa = (a.payment_date as string) || "";
+    const pb = (b.payment_date as string) || "";
+    return pb.localeCompare(pa);
+  });
+  studentFee.fee_payments = payments;
 
   // Role-based: student/parent can only view their own
   if (
     (user.role === "student" || user.role === "parent") &&
     user.studentId &&
-    studentFee.studentId !== user.studentId
+    (studentFee.student_id as string) !== user.studentId
   ) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  return NextResponse.json({ studentFee });
+  return NextResponse.json({ studentFee: toCamelCase(studentFee) });
 }
 
 // PUT — update student fee (rare: e.g. adjust total/due date)
@@ -61,44 +67,65 @@ export async function PUT(
       status?: string;
     };
 
-    const existing = await db.studentFee.findFirst({
-      where: { id, student: { schoolId: user.schoolId } },
-    });
-    if (!existing) {
+    const { data: existing, error: existError } = await supabaseAdmin
+      .from("student_fees")
+      .select("*, students!inner(school_id)")
+      .eq("id", id)
+      .eq("students.school_id", user.schoolId)
+      .maybeSingle();
+
+    if (existError || !existing) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
     const newTotal =
-      totalAmount !== undefined ? Number(totalAmount) : existing.totalAmount;
+      totalAmount !== undefined ? Number(totalAmount) : (existing.total_amount as number);
     const newDue =
       totalAmount !== undefined
-        ? Math.max(0, newTotal - existing.paidAmount)
-        : existing.dueAmount;
+        ? Math.max(0, newTotal - (existing.paid_amount as number))
+        : (existing.due_amount as number);
 
-    let newStatus = existing.status;
+    let newStatus = existing.status as string;
     if (status) newStatus = status;
     else if (totalAmount !== undefined) {
-      if (existing.paidAmount >= newTotal && newTotal > 0) newStatus = "paid";
-      else if (existing.paidAmount > 0) newStatus = "partial";
+      if ((existing.paid_amount as number) >= newTotal && newTotal > 0) newStatus = "paid";
+      else if ((existing.paid_amount as number) > 0) newStatus = "partial";
       else newStatus = "pending";
     }
 
-    const updated = await db.studentFee.update({
-      where: { id },
-      data: {
-        dueDate: dueDate !== undefined ? dueDate || null : existing.dueDate,
-        totalAmount: newTotal,
-        dueAmount: newDue,
-        status: newStatus,
-      },
-      include: {
-        student: { include: { class: true } },
-        feeStructure: true,
-        payments: { orderBy: { paymentDate: "desc" } },
-      },
-    });
+    const updateData: Record<string, unknown> = {
+      due_date: dueDate !== undefined ? dueDate || null : existing.due_date,
+      total_amount: newTotal,
+      due_amount: newDue,
+      status: newStatus,
+    };
 
-    return NextResponse.json({ studentFee: updated });
+    const { data: updated, error: updateError } = await supabaseAdmin
+      .from("student_fees")
+      .update(updateData)
+      .eq("id", id)
+      .select(
+        "*, students(id, first_name, last_name, admission_number, classes(id, name)), fee_structures(*), fee_payments(*)"
+      )
+      .single();
+
+    if (updateError || !updated) {
+      return NextResponse.json(
+        { error: "Failed to update student fee" },
+        { status: 500 }
+      );
+    }
+
+    // Sort payments desc
+    const payments = (updated.fee_payments as Array<Record<string, unknown>>) || [];
+    payments.sort((a, b) => {
+      const pa = (a.payment_date as string) || "";
+      const pb = (b.payment_date as string) || "";
+      return pb.localeCompare(pa);
+    });
+    updated.fee_payments = payments;
+
+    return NextResponse.json({ studentFee: toCamelCase(updated) });
   } catch {
     return NextResponse.json(
       { error: "Failed to update student fee" },

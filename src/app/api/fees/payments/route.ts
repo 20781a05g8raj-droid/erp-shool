@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 function computeStatus(paid: number, total: number, dueDate: string | null): string {
@@ -44,10 +44,14 @@ export async function POST(req: Request) {
       );
     }
 
-    const studentFee = await db.studentFee.findFirst({
-      where: { id: studentFeeId, student: { schoolId: user.schoolId } },
-    });
-    if (!studentFee) {
+    const { data: studentFee, error: sfError } = await supabaseAdmin
+      .from("student_fees")
+      .select("*, students!inner(school_id)")
+      .eq("id", studentFeeId)
+      .eq("students.school_id", user.schoolId)
+      .maybeSingle();
+
+    if (sfError || !studentFee) {
       return NextResponse.json(
         { error: "Student fee record not found" },
         { status: 404 }
@@ -55,10 +59,10 @@ export async function POST(req: Request) {
     }
 
     const payAmount = Number(amount);
-    if (payAmount > studentFee.dueAmount + 0.01) {
+    if (payAmount > (studentFee.due_amount as number) + 0.01) {
       return NextResponse.json(
         {
-          error: `Amount exceeds outstanding due of ${studentFee.dueAmount}`,
+          error: `Amount exceeds outstanding due of ${studentFee.due_amount}`,
         },
         { status: 400 }
       );
@@ -67,13 +71,19 @@ export async function POST(req: Request) {
     // Generate receipt number: RCP + incrementing (year + sequential)
     const year = new Date().getFullYear();
     const prefix = `RCP${year}`;
-    const lastPayment = await db.feePayment.findFirst({
-      where: { receiptNumber: { startsWith: prefix } },
-      orderBy: { receiptNumber: "desc" },
-    });
+    const { data: lastPayments } = await supabaseAdmin
+      .from("fee_payments")
+      .select("receipt_number")
+      .like("receipt_number", `${prefix}%`)
+      .order("receipt_number", { ascending: false })
+      .limit(1);
+
     let seq = 1;
-    if (lastPayment && lastPayment.receiptNumber) {
-      const parts = lastPayment.receiptNumber.split("-");
+    const lastPayment = (lastPayments || [])[0] as
+      | { receipt_number: string | null }
+      | undefined;
+    if (lastPayment && lastPayment.receipt_number) {
+      const parts = lastPayment.receipt_number.split("-");
       if (parts.length === 2) {
         const n = parseInt(parts[1], 10);
         if (!isNaN(n)) seq = n + 1;
@@ -81,35 +91,61 @@ export async function POST(req: Request) {
     }
     const receiptNumber = `${prefix}-${String(seq).padStart(5, "0")}`;
 
-    const payment = await db.feePayment.create({
-      data: {
-        studentFeeId,
+    const { data: payment, error: payError } = await supabaseAdmin
+      .from("fee_payments")
+      .insert({
+        student_fee_id: studentFeeId,
         amount: payAmount,
-        paymentMethod: paymentMethod || "cash",
-        paymentDate: paymentDate || new Date().toISOString().split("T")[0],
-        receiptNumber,
-        transactionId: transactionId || null,
-        collectedBy: user.name,
+        payment_method: paymentMethod || "cash",
+        payment_date:
+          paymentDate || new Date().toISOString().split("T")[0],
+        receipt_number: receiptNumber,
+        transaction_id: transactionId || null,
+        collected_by: user.name,
         remarks: remarks || null,
-      },
-    });
+      })
+      .select("*")
+      .single();
+
+    if (payError || !payment) {
+      return NextResponse.json(
+        { error: "Failed to record payment" },
+        { status: 500 }
+      );
+    }
 
     // Update studentFee
-    const newPaid = studentFee.paidAmount + payAmount;
-    const newDue = Math.max(0, studentFee.totalAmount - newPaid);
-    const newStatus = computeStatus(newPaid, studentFee.totalAmount, studentFee.dueDate);
+    const newPaid = (studentFee.paid_amount as number) + payAmount;
+    const newDue = Math.max(0, (studentFee.total_amount as number) - newPaid);
+    const newStatus = computeStatus(
+      newPaid,
+      studentFee.total_amount as number,
+      studentFee.due_date as string | null
+    );
 
-    const updatedStudentFee = await db.studentFee.update({
-      where: { id: studentFeeId },
-      data: {
-        paidAmount: newPaid,
-        dueAmount: newDue,
+    const { data: updatedStudentFee, error: updateError } = await supabaseAdmin
+      .from("student_fees")
+      .update({
+        paid_amount: newPaid,
+        due_amount: newDue,
         status: newStatus,
-      },
-    });
+      })
+      .eq("id", studentFeeId)
+      .select("*")
+      .single();
+
+    if (updateError) {
+      return NextResponse.json(
+        { error: "Failed to update student fee" },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json(
-      { payment, studentFee: updatedStudentFee },
+      {
+        payment: toCamelCase(payment as Record<string, unknown>),
+        studentFee: toCamelCase(updatedStudentFee as Record<string, unknown>),
+      },
       { status: 201 }
     );
   } catch {

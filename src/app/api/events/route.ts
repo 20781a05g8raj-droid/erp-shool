@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import type { Prisma } from "@prisma/client";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 import type { Role } from "@/types";
 
@@ -17,38 +16,43 @@ export async function GET(req: NextRequest) {
   const monthStr = searchParams.get("month");
   const yearStr = searchParams.get("year");
 
-  const where: Prisma.SchoolEventWhereInput = { schoolId };
+  let query = supabaseAdmin
+    .from("school_events")
+    .select("*")
+    .eq("school_id", schoolId);
 
   if (monthStr && yearStr) {
     const year = parseInt(yearStr, 10);
     const month = parseInt(monthStr, 10); // 1-12
     if (!isNaN(year) && !isNaN(month) && month >= 1 && month <= 12) {
       const start = `${year}-${String(month).padStart(2, "0")}-01`;
-      // End of month: last day of the month (YYYY-MM-31 covers all months safely).
       const endOfMonth = `${year}-${String(month).padStart(2, "0")}-31`;
-      // First day of next month — used as the exclusive upper bound.
       const endMonth = month === 12 ? 1 : month + 1;
       const endYear = month === 12 ? year + 1 : year;
       const nextMonthStart = `${endYear}-${String(endMonth).padStart(2, "0")}-01`;
+
       // Any event whose [date, endDate] overlaps the month range.
-      where.OR = [
-        // Single-day or start-of-month event in this month
-        { date: { gte: start, lte: endOfMonth } },
-        // Multi-day event starting in this month (endDate may be later)
-        { date: { gte: start, lt: nextMonthStart } },
-        // Multi-day event starting before this month but ending in/after it
-        { endDate: { gte: start, lte: endOfMonth } },
-        { endDate: { gte: nextMonthStart }, date: { lt: start } },
-      ];
+      // We fetch with OR across 4 clauses
+      query = query.or(
+        [
+          `and(date.gte.${start},date.lte.${endOfMonth})`,
+          `and(date.gte.${start},date.lt.${nextMonthStart})`,
+          `and(end_date.gte.${start},end_date.lte.${endOfMonth})`,
+          `and(end_date.gte.${nextMonthStart},date.lt.${start})`,
+        ].join(",")
+      );
     }
   }
 
-  const events = await db.schoolEvent.findMany({
-    where,
-    orderBy: { date: "asc" },
-  });
+  query = query.order("date", { ascending: true });
 
-  return NextResponse.json({ events });
+  const { data: eventsRaw, error } = await query;
+  if (error) {
+    return NextResponse.json({ error: "Failed to fetch events" }, { status: 500 });
+  }
+
+  const events = (eventsRaw || []) as Array<Record<string, unknown>>;
+  return NextResponse.json({ events: events.map((e) => toCamelCase(e)) });
 }
 
 // POST /api/events — create a new event
@@ -80,21 +84,38 @@ export async function POST(req: NextRequest) {
 
   // endDate must be on or after date
   if (body.endDate && body.endDate < body.date) {
-    return NextResponse.json({ error: "End date cannot be before start date" }, { status: 400 });
+    return NextResponse.json(
+      { error: "End date cannot be before start date" },
+      { status: 400 }
+    );
   }
 
   try {
-    const event = await db.schoolEvent.create({
-      data: {
-        title: body.title.trim(),
-        description: body.description?.trim() || null,
-        date: body.date,
-        endDate: body.endDate || null,
-        type,
-        schoolId: user.schoolId,
-      },
-    });
-    return NextResponse.json(event, { status: 201 });
+    const insertRow = {
+      title: body.title.trim(),
+      description: body.description?.trim() || null,
+      date: body.date,
+      end_date: body.endDate || null,
+      type,
+      school_id: user.schoolId,
+    };
+
+    const { data: eventRaw, error: insertError } = await supabaseAdmin
+      .from("school_events")
+      .insert(insertRow)
+      .select("*")
+      .single();
+
+    if (insertError || !eventRaw) {
+      return NextResponse.json(
+        { error: insertError?.message || "Failed to create event" },
+        { status: 500 }
+      );
+    }
+    return NextResponse.json(
+      toCamelCase(eventRaw as Record<string, unknown>),
+      { status: 201 }
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create event";
     return NextResponse.json({ error: message }, { status: 500 });

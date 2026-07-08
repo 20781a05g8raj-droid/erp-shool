@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // GET /api/attendance/student?studentId=...
@@ -23,20 +23,14 @@ export async function GET(req: Request) {
 
   try {
     // Verify the student belongs to this school
-    const student = await db.student.findFirst({
-      where: { id: studentId, schoolId: user.schoolId },
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        admissionNumber: true,
-        rollNumber: true,
-        classId: true,
-        sectionId: true,
-        class: { select: { id: true, name: true } },
-        section: { select: { id: true, name: true } },
-      },
-    });
+    const { data: student } = await supabaseAdmin
+      .from("students")
+      .select(
+        "id, first_name, last_name, admission_number, roll_number, class_id, section_id, class:classes(id, name), section:sections(id, name)"
+      )
+      .eq("id", studentId)
+      .eq("school_id", user.schoolId)
+      .maybeSingle();
 
     if (!student) {
       return NextResponse.json(
@@ -45,16 +39,27 @@ export async function GET(req: Request) {
       );
     }
 
-    const where = {
-      studentId,
-      ...(month ? { date: { startsWith: month } } : {}),
-    };
+    let attendanceQuery = supabaseAdmin
+      .from("student_attendance")
+      .select("id, date, status, marked_by")
+      .eq("student_id", studentId);
+    if (month) {
+      // date column is TEXT "YYYY-MM-DD" — match prefix via LIKE.
+      attendanceQuery = attendanceQuery.like("date", `${month}%`);
+    }
+    attendanceQuery = attendanceQuery.order("date", { ascending: true });
 
-    const records = await db.studentAttendance.findMany({
-      where,
-      orderBy: { date: "asc" },
-      select: { id: true, date: true, status: true, markedBy: true },
-    });
+    const { data: recordsData, error: recordsErr } = await attendanceQuery;
+    if (recordsErr) {
+      throw recordsErr;
+    }
+
+    const records = (recordsData || []) as Array<{
+      id: string;
+      date: string;
+      status: string;
+      marked_by: string | null;
+    }>;
 
     const total = records.length;
     const counts = {
@@ -75,8 +80,10 @@ export async function GET(req: Request) {
     for (const r of records) byDate[r.date] = r.status;
 
     return NextResponse.json({
-      student,
-      records,
+      student: toCamelCase(student as unknown as Record<string, unknown>),
+      records: records.map((r) =>
+        toCamelCase(r as unknown as Record<string, unknown>)
+      ),
       byDate,
       counts,
       total,

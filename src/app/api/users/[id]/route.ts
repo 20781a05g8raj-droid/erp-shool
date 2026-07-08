@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 import type { Role } from "@/types";
 
@@ -21,20 +21,21 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
   }
 
   const { id } = await params;
-  const profile = await db.profile.findFirst({
-    where: { id, schoolId: user.schoolId },
-    select: {
-      id: true, email: true, name: true, role: true,
-      phone: true, avatar: true, status: true,
-      studentId: true, staffId: true, createdAt: true,
-    },
-  });
+  const { data: profile } = await supabaseAdmin
+    .from("profiles")
+    .select(`
+      id, email, name, role, phone, avatar, status,
+      student_id, staff_id, created_at
+    `)
+    .eq("id", id)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
 
   if (!profile) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  return NextResponse.json({ user: profile });
+  return NextResponse.json({ user: toCamelCase(profile) });
 }
 
 // PUT /api/users/[id] — update user (name, role, phone, status, password reset)
@@ -51,9 +52,12 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   const body = await req.json();
   const { name, role, phone, status, password, studentId, staffId } = body;
 
-  const existing = await db.profile.findFirst({
-    where: { id, schoolId: user.schoolId },
-  });
+  const { data: existing } = await supabaseAdmin
+    .from("profiles")
+    .select("id")
+    .eq("id", id)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
   if (!existing) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
@@ -69,24 +73,30 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
     );
   }
 
-  const updated = await db.profile.update({
-    where: { id },
-    data: {
-      ...(name !== undefined ? { name: name.trim() } : {}),
-      ...(role !== undefined ? { role } : {}),
-      ...(phone !== undefined ? { phone: phone?.trim() || null } : {}),
-      ...(status !== undefined ? { status } : {}),
-      ...(password ? { password: `demo:${password}` } : {}),
-      ...(studentId !== undefined ? { studentId: studentId || null } : {}),
-      ...(staffId !== undefined ? { staffId: staffId || null } : {}),
-    },
-    select: {
-      id: true, email: true, name: true, role: true,
-      phone: true, status: true, studentId: true, staffId: true, createdAt: true,
-    },
-  });
+  const updateData: Record<string, unknown> = {};
+  if (name !== undefined) updateData.name = name.trim();
+  if (role !== undefined) updateData.role = role;
+  if (phone !== undefined) updateData.phone = phone?.trim() || null;
+  if (status !== undefined) updateData.status = status;
+  if (password) updateData.password = `demo:${password}`;
+  if (studentId !== undefined) updateData.student_id = studentId || null;
+  if (staffId !== undefined) updateData.staff_id = staffId || null;
 
-  return NextResponse.json({ user: updated });
+  const { data, error } = await supabaseAdmin
+    .from("profiles")
+    .update(updateData)
+    .eq("id", id)
+    .select(`
+      id, email, name, role, phone, status,
+      student_id, staff_id, created_at
+    `)
+    .single();
+
+  if (error || !data) {
+    return NextResponse.json({ error: error?.message || "Failed to update user" }, { status: 500 });
+  }
+
+  return NextResponse.json({ user: toCamelCase(data) });
 }
 
 // DELETE /api/users/[id] — delete user profile
@@ -109,14 +119,20 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams) {
     );
   }
 
-  const existing = await db.profile.findFirst({
-    where: { id, schoolId: user.schoolId },
-  });
+  const { data: existing } = await supabaseAdmin
+    .from("profiles")
+    .select("id")
+    .eq("id", id)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
   if (!existing) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  await db.profile.delete({ where: { id } });
+  const { error } = await supabaseAdmin.from("profiles").delete().eq("id", id);
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 
   return NextResponse.json({ success: true });
 }

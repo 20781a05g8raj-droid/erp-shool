@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // POST /api/sections — create a section under a class. Optionally assigns a
@@ -27,39 +27,49 @@ export async function POST(req: NextRequest) {
   }
 
   // Verify class belongs to this school.
-  const cls = await db.class.findFirst({
-    where: { id: classId, schoolId: user.schoolId },
-  });
+  const { data: cls } = await supabaseAdmin
+    .from("classes")
+    .select("id")
+    .eq("id", classId)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
   if (!cls) {
     return NextResponse.json({ error: "Class not found" }, { status: 404 });
   }
 
   // Validate class teacher belongs to this school (if provided).
-  let classTeacherId: string | undefined = undefined;
+  let classTeacherId: string | null = null;
   if (body.classTeacherId) {
-    const staff = await db.staff.findFirst({
-      where: { id: body.classTeacherId, schoolId: user.schoolId },
-    });
+    const { data: staff } = await supabaseAdmin
+      .from("staff")
+      .select("id")
+      .eq("id", body.classTeacherId)
+      .eq("school_id", user.schoolId)
+      .maybeSingle();
     if (staff) classTeacherId = staff.id;
   }
 
-  const section = await db.section.create({
-    data: {
+  const { data: section, error } = await supabaseAdmin
+    .from("sections")
+    .insert({
       name,
-      classId,
-      classTeacherId,
-    },
-    include: {
-      classTeacher: {
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          employeeId: true,
-        },
-      },
-    },
-  });
+      class_id: classId,
+      class_teacher_id: classTeacherId,
+    })
+    .select(
+      "id, name, class_id, class_teacher_id, created_at, class_teacher:staff!sections_class_teacher_fk(id, first_name, last_name, employee_id)"
+    )
+    .single();
 
-  return NextResponse.json({ section }, { status: 201 });
+  if (error || !section) {
+    return NextResponse.json(
+      { error: "Failed to create section" },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json(
+    { section: toCamelCase(section as unknown as Record<string, unknown>) },
+    { status: 201 }
+  );
 }

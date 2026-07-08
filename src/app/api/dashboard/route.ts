@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 export async function GET() {
@@ -31,41 +31,75 @@ export async function GET() {
   return await getAdminDashboard(schoolId, user.role);
 }
 
+// Helper: run a count query and return the numeric count
+async function countRows(table: string, filters: Record<string, unknown>): Promise<number> {
+  let query = supabaseAdmin.from(table).select("*", { count: "exact", head: true });
+  for (const [key, value] of Object.entries(filters)) {
+    query = query.eq(key, value as string);
+  }
+  const { count } = await query;
+  return count ?? 0;
+}
+
 // ==================== ADMIN DASHBOARD ====================
 async function getAdminDashboard(schoolId: string, role: string) {
   const [students, staff, classes, books, vehicles, routes, notices, exams, homework] = await Promise.all([
-    db.student.count({ where: { schoolId, status: "active" } }),
-    db.staff.count({ where: { schoolId, status: "active" } }),
-    db.class.count({ where: { schoolId } }),
-    db.libraryBook.count({ where: { schoolId } }),
-    db.vehicle.count({ where: { schoolId } }),
-    db.transportRoute.count({ where: { schoolId } }),
-    db.notice.count({ where: { schoolId } }),
-    db.exam.count({ where: { schoolId } }),
-    db.homework.count({ where: { schoolId } }),
+    countRows("students", { school_id: schoolId, status: "active" }),
+    countRows("staff", { school_id: schoolId, status: "active" }),
+    countRows("classes", { school_id: schoolId }),
+    countRows("library_books", { school_id: schoolId }),
+    countRows("vehicles", { school_id: schoolId }),
+    countRows("transport_routes", { school_id: schoolId }),
+    countRows("notices", { school_id: schoolId }),
+    countRows("exams", { school_id: schoolId }),
+    countRows("homework", { school_id: schoolId }),
   ]);
 
-  const studentFees = await db.studentFee.findMany({
-    where: { student: { schoolId } },
-    select: { totalAmount: true, paidAmount: true, dueAmount: true, status: true },
-  });
-  const totalFeeExpected = studentFees.reduce((sum, f) => sum + f.totalAmount, 0);
-  const totalFeeCollected = studentFees.reduce((sum, f) => sum + f.paidAmount, 0);
-  const totalFeeDue = studentFees.reduce((sum, f) => sum + f.dueAmount, 0);
-  const feeDefaulters = studentFees.filter((f) => f.status !== "paid").length;
+  // Fetch all student_fees for this school (joined via student) and compute fee stats in JS
+  const { data: studentFeesRaw } = await supabaseAdmin
+    .from("student_fees")
+    .select("id, total_amount, paid_amount, due_amount, status, students!inner(school_id)")
+    .eq("students.school_id", schoolId);
+
+  const studentFees = studentFeesRaw ?? [];
+  const studentFeeIds = studentFees.map((f: any) => f.id);
+  const totalFeeExpected = studentFees.reduce((sum, f: any) => sum + Number(f.total_amount ?? 0), 0);
+  const totalFeeCollected = studentFees.reduce((sum, f: any) => sum + Number(f.paid_amount ?? 0), 0);
+  const totalFeeDue = studentFees.reduce((sum, f: any) => sum + Number(f.due_amount ?? 0), 0);
+  const feeDefaulters = studentFees.filter((f: any) => f.status !== "paid").length;
 
   const today = new Date();
+  const todayStr = today.toISOString().split("T")[0];
+
+  // 7-day window for attendance trend (inclusive of today)
+  const sevenDaysAgo = new Date(today);
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+  const sevenDaysAgoStr = sevenDaysAgo.toISOString().split("T")[0];
+
+  // Fetch all attendance records for the school for last 7 days in ONE query, group in JS.
+  // student_attendance has no school_id, so we join via students!inner(school_id) for filtering.
+  const { data: attendanceRaw } = await supabaseAdmin
+    .from("student_attendance")
+    .select("date, status, students!inner(school_id)")
+    .eq("students.school_id", schoolId)
+    .gte("date", sevenDaysAgoStr)
+    .lte("date", todayStr);
+
+  const attendanceByDate: Record<string, any[]> = {};
+  for (const rec of attendanceRaw ?? []) {
+    const d = (rec as any).date;
+    if (!attendanceByDate[d]) attendanceByDate[d] = [];
+    attendanceByDate[d].push(rec);
+  }
+
   const attendanceTrend: { date: string; present: number; absent: number; rate: number }[] = [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date(today);
     d.setDate(d.getDate() - i);
     const dateStr = d.toISOString().split("T")[0];
-    const dayRecords = await db.studentAttendance.findMany({
-      where: { date: dateStr, student: { schoolId } },
-      select: { status: true },
-    });
-    const present = dayRecords.filter((r) => r.status === "present" || r.status === "late").length;
-    const absent = dayRecords.filter((r) => r.status === "absent").length;
+    const dayRecords = attendanceByDate[dateStr] ?? [];
+    const present = dayRecords.filter((r: any) => r.status === "present" || r.status === "late").length;
+    const absent = dayRecords.filter((r: any) => r.status === "absent").length;
     const rate = dayRecords.length > 0 ? (present / dayRecords.length) * 100 : 0;
     attendanceTrend.push({
       date: d.toLocaleDateString("en-IN", { weekday: "short", day: "numeric" }),
@@ -73,33 +107,47 @@ async function getAdminDashboard(schoolId: string, role: string) {
     });
   }
 
+  // Fetch all fee_payments for the school in last 6 months (filter by student_fee_id IN school's student_fees).
+  const sixMonthsAgo = new Date(today.getFullYear(), today.getMonth() - 5, 1);
+  const sixMonthsAgoStr = sixMonthsAgo.toISOString().split("T")[0];
+
+  let paymentsRaw: any[] = [];
+  if (studentFeeIds.length > 0) {
+    const { data: pr } = await supabaseAdmin
+      .from("fee_payments")
+      .select("amount, payment_date")
+      .in("student_fee_id", studentFeeIds)
+      .gte("payment_date", sixMonthsAgoStr);
+    paymentsRaw = (pr ?? []) as any[];
+  }
+
   const feeTrend: { month: string; collected: number; expected: number }[] = [];
   for (let i = 5; i >= 0; i--) {
     const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
     const monthName = d.toLocaleDateString("en-IN", { month: "short" });
-    const payments = await db.feePayment.findMany({
-      where: {
-        studentFee: { student: { schoolId } },
-        paymentDate: { startsWith: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}` },
-      },
-      select: { amount: true },
-    });
-    const collected = payments.reduce((sum, p) => sum + p.amount, 0);
+    const prefix = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const monthPayments = paymentsRaw.filter((p: any) => typeof p.payment_date === "string" && p.payment_date.startsWith(prefix));
+    const collected = monthPayments.reduce((sum, p: any) => sum + Number(p.amount ?? 0), 0);
     feeTrend.push({ month: monthName, collected, expected: Math.round(totalFeeExpected / 6) });
   }
 
-  const latestExam = await db.exam.findFirst({
-    where: { schoolId },
-    orderBy: { createdAt: "desc" },
-    include: { results: { include: { subject: true } } },
-  });
+  // Latest exam with results + subject (aliased to match Prisma relation name "subject")
+  const { data: latestExamRaw } = await supabaseAdmin
+    .from("exams")
+    .select("*, exam_results(*, subject:subjects(*))")
+    .eq("school_id", schoolId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const latestExam: any = latestExamRaw;
   const examPerformance: { subject: string; avgMarks: number }[] = [];
-  if (latestExam) {
+  if (latestExam && Array.isArray(latestExam.exam_results)) {
     const subjectGroups: Record<string, { total: number; count: number; name: string }> = {};
-    for (const r of latestExam.results) {
-      const key = r.subjectId;
+    for (const r of latestExam.exam_results) {
+      const key = r.subject_id;
       if (!subjectGroups[key]) subjectGroups[key] = { total: 0, count: 0, name: r.subject?.name || "Unknown" };
-      subjectGroups[key].total += r.marksObtained;
+      subjectGroups[key].total += Number(r.marks_obtained ?? 0);
       subjectGroups[key].count += 1;
     }
     for (const key of Object.keys(subjectGroups)) {
@@ -108,24 +156,56 @@ async function getAdminDashboard(schoolId: string, role: string) {
     }
   }
 
-  const maleStudents = await db.student.count({ where: { schoolId, gender: "male", status: "active" } });
-  const femaleStudents = await db.student.count({ where: { schoolId, gender: "female", status: "active" } });
-  const otherStudents = await db.student.count({ where: { schoolId, status: "active", NOT: { OR: [{ gender: "male" }, { gender: "female" }] } } });
+  // Gender distribution (male + female + other = total active)
+  const [maleStudents, femaleStudents] = await Promise.all([
+    countRows("students", { school_id: schoolId, gender: "male", status: "active" }),
+    countRows("students", { school_id: schoolId, gender: "female", status: "active" }),
+  ]);
+  // "Other" = total active − male − female (handles null / unknown genders)
+  const otherStudents = Math.max(0, students - maleStudents - femaleStudents);
 
-  const allClasses = await db.class.findMany({ where: { schoolId }, orderBy: { order: "asc" }, select: { id: true, name: true } });
+  // Class distribution
+  const { data: allClassesRaw } = await supabaseAdmin
+    .from("classes")
+    .select("id, name, \"order\"")
+    .eq("school_id", schoolId)
+    .order("order", { ascending: true });
+
+  const allClasses = allClassesRaw ?? [];
   const classDistribution: { name: string; count: number }[] = [];
   for (const cls of allClasses) {
-    const count = await db.student.count({ where: { classId: cls.id, status: "active" } });
-    if (count > 0) classDistribution.push({ name: cls.name, count });
+    const { count } = await supabaseAdmin
+      .from("students")
+      .select("*", { count: "exact", head: true })
+      .eq("class_id", cls.id)
+      .eq("status", "active");
+    const c = count ?? 0;
+    if (c > 0) classDistribution.push({ name: cls.name, count: c });
   }
 
-  const todayStr = today.toISOString().split("T")[0];
-  const todayAttendance = await db.studentAttendance.findMany({ where: { date: todayStr, student: { schoolId } }, select: { status: true } });
-  const todayPresent = todayAttendance.filter((a) => a.status === "present" || a.status === "late").length;
-  const todayRate = todayAttendance.length > 0 ? Math.round((todayPresent / todayAttendance.length) * 100) : 0;
+  // Today's attendance rate
+  const todayRecords = attendanceByDate[todayStr] ?? [];
+  const todayPresent = todayRecords.filter((r: any) => r.status === "present" || r.status === "late").length;
+  const todayRate = todayRecords.length > 0 ? Math.round((todayPresent / todayRecords.length) * 100) : 0;
 
-  const recentNotices = await db.notice.findMany({ where: { schoolId }, orderBy: { createdAt: "desc" }, take: 5 });
-  const recentStudents = await db.student.findMany({ where: { schoolId }, orderBy: { createdAt: "desc" }, take: 5, include: { class: true, section: true } });
+  // Recent notices + students (use aliased relation names to match Prisma output shape)
+  const [{ data: recentNoticesRaw }, { data: recentStudentsRaw }] = await Promise.all([
+    supabaseAdmin
+      .from("notices")
+      .select("*")
+      .eq("school_id", schoolId)
+      .order("created_at", { ascending: false })
+      .limit(5),
+    supabaseAdmin
+      .from("students")
+      .select("*, class:classes(*), section:sections(*)")
+      .eq("school_id", schoolId)
+      .order("created_at", { ascending: false })
+      .limit(5),
+  ]);
+
+  const recentNotices = (recentNoticesRaw ?? []).map((n) => toCamelCase(n));
+  const recentStudents = (recentStudentsRaw ?? []).map((s) => toCamelCase(s));
 
   return NextResponse.json({
     role: "admin",
@@ -144,64 +224,105 @@ async function getTeacherDashboard(schoolId: string, staffId: string, teacherNam
   const todayStr = today.toISOString().split("T")[0];
   const dayName = today.toLocaleDateString("en-US", { weekday: "long" });
 
-  // Get teacher's timetable slots
-  const myTimetable = await db.timetableSlot.findMany({
-    where: { staffId, class: { schoolId } },
-    include: { subject: true, class: true, section: true },
-  });
+  // Get teacher's timetable slots. staff_id is unique per school, so filter by staff_id only.
+  const { data: myTimetableRaw } = await supabaseAdmin
+    .from("timetable_slots")
+    .select("*, subject:subjects(*), class:classes(*), section:sections(*)")
+    .eq("staff_id", staffId);
+
+  const myTimetable: any[] = (myTimetableRaw ?? []) as any[];
 
   // My classes = distinct class/section combos
   const classSectionSet = new Set<string>();
-  myTimetable.forEach((s) => classSectionSet.add(`${s.classId}-${s.sectionId}`));
+  myTimetable.forEach((s) => classSectionSet.add(`${s.class_id}-${s.section_id}`));
   const myClassesCount = classSectionSet.size;
 
   // My students = count of students in those classes
-  const classIds = [...new Set(myTimetable.map((s) => s.classId))];
-  const myStudents = classIds.length > 0 ? await db.student.count({ where: { classId: { in: classIds }, status: "active" } }) : 0;
+  const classIds = [...new Set(myTimetable.map((s) => s.class_id))];
+  let myStudents = 0;
+  if (classIds.length > 0) {
+    const { count } = await supabaseAdmin
+      .from("students")
+      .select("*", { count: "exact", head: true })
+      .in("class_id", classIds)
+      .eq("status", "active");
+    myStudents = count ?? 0;
+  }
 
   // Homework posted by this teacher
-  const homeworkPosted = await db.homework.count({ where: { staffId, schoolId } });
-  const myHomework = await db.homework.findMany({
-    where: { staffId, schoolId },
-    orderBy: { createdAt: "desc" },
-    take: 5,
-    include: { class: true, subject: true },
-  });
+  const homeworkPosted = await countRows("homework", { staff_id: staffId, school_id: schoolId });
+
+  const { data: myHomeworkRaw } = await supabaseAdmin
+    .from("homework")
+    .select("*, class:classes(*), subject:subjects(*)")
+    .eq("staff_id", staffId)
+    .eq("school_id", schoolId)
+    .order("created_at", { ascending: false })
+    .limit(5);
+  const myHomework: any[] = (myHomeworkRaw ?? []) as any[];
 
   // Today's periods
   const todayPeriods = myTimetable.filter((s) => s.day === dayName);
   const todayPeriodsCount = todayPeriods.length;
 
-  // Attendance marking trend (last 7 days) — how many students this teacher marked
+  // Attendance marking trend (last 7 days) — fetch all attendance for teacher's classes in one query.
   const attendanceMarkingTrend: { date: string; present: number; absent: number }[] = [];
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(today);
-    d.setDate(d.getDate() - i);
-    const dateStr = d.toISOString().split("T")[0];
-    const records = await db.studentAttendance.findMany({
-      where: { date: dateStr, student: { classId: { in: classIds } } },
-      select: { status: true },
-    });
-    const present = records.filter((r) => r.status === "present" || r.status === "late").length;
-    const absent = records.filter((r) => r.status === "absent").length;
-    attendanceMarkingTrend.push({
-      date: d.toLocaleDateString("en-IN", { weekday: "short", day: "numeric" }),
-      present, absent,
-    });
+  if (classIds.length > 0) {
+    const sevenDaysAgo = new Date(today);
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+    const sevenDaysAgoStr = sevenDaysAgo.toISOString().split("T")[0];
+
+    const { data: attRaw } = await supabaseAdmin
+      .from("student_attendance")
+      .select("date, status, students!inner(class_id)")
+      .in("students.class_id", classIds)
+      .gte("date", sevenDaysAgoStr)
+      .lte("date", todayStr);
+
+    const byDate: Record<string, any[]> = {};
+    for (const rec of attRaw ?? []) {
+      const d = (rec as any).date;
+      if (!byDate[d]) byDate[d] = [];
+      byDate[d].push(rec);
+    }
+
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().split("T")[0];
+      const records = byDate[dateStr] ?? [];
+      const present = records.filter((r: any) => r.status === "present" || r.status === "late").length;
+      const absent = records.filter((r: any) => r.status === "absent").length;
+      attendanceMarkingTrend.push({
+        date: d.toLocaleDateString("en-IN", { weekday: "short", day: "numeric" }),
+        present, absent,
+      });
+    }
+  } else {
+    // No classes — fill trend with zeros
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      attendanceMarkingTrend.push({
+        date: d.toLocaleDateString("en-IN", { weekday: "short", day: "numeric" }),
+        present: 0, absent: 0,
+      });
+    }
   }
 
   // My classes performance — exam results for classes I teach
   const myClassesPerformance: { subject: string; avgMarks: number }[] = [];
   if (classIds.length > 0) {
-    const examResults = await db.examResult.findMany({
-      where: { student: { classId: { in: classIds } } },
-      include: { subject: true },
-    });
+    const { data: examResultsRaw } = await supabaseAdmin
+      .from("exam_results")
+      .select("*, subject:subjects(*), students!inner(class_id)")
+      .in("students.class_id", classIds);
+
     const subjectGroups: Record<string, { total: number; count: number; name: string }> = {};
-    for (const r of examResults) {
-      const key = r.subjectId;
+    for (const r of (examResultsRaw ?? []) as any[]) {
+      const key = r.subject_id;
       if (!subjectGroups[key]) subjectGroups[key] = { total: 0, count: 0, name: r.subject?.name || "Unknown" };
-      subjectGroups[key].total += r.marksObtained;
+      subjectGroups[key].total += Number(r.marks_obtained ?? 0);
       subjectGroups[key].count += 1;
     }
     for (const key of Object.keys(subjectGroups)) {
@@ -211,24 +332,24 @@ async function getTeacherDashboard(schoolId: string, staffId: string, teacherNam
   }
 
   // My leaves
-  const myLeaves = await db.staffLeave.findMany({
-    where: { staffId },
-    orderBy: { createdAt: "desc" },
-    take: 5,
-  });
+  const { data: myLeavesRaw } = await supabaseAdmin
+    .from("staff_leaves")
+    .select("*")
+    .eq("staff_id", staffId)
+    .order("created_at", { ascending: false })
+    .limit(5);
+  const myLeaves: any[] = (myLeavesRaw ?? []) as any[];
 
-  // Recent notices for teacher
-  const recentNotices = await db.notice.findMany({
-    where: {
-      schoolId,
-      OR: [
-        { targetAudience: "all" },
-        { targetAudience: "role", targetRole: "teacher" },
-      ],
-    },
-    orderBy: { createdAt: "desc" },
-    take: 5,
-  });
+  // Recent notices for teacher (target_audience=all OR target_audience=role AND target_role=teacher)
+  const { data: allNoticesRaw } = await supabaseAdmin
+    .from("notices")
+    .select("*")
+    .eq("school_id", schoolId)
+    .order("created_at", { ascending: false })
+    .limit(50);
+  const recentNoticesFiltered = (allNoticesRaw ?? [])
+    .filter((n: any) => n.target_audience === "all" || (n.target_audience === "role" && n.target_role === "teacher"))
+    .slice(0, 5);
 
   // Sort today's timetable by period
   const myTimetableToday = todayPeriods.sort((a, b) => a.period - b.period);
@@ -243,16 +364,16 @@ async function getTeacherDashboard(schoolId: string, staffId: string, teacherNam
       period: s.period,
       subject: s.subject?.name || "—",
       class: `${s.class?.name || ""} ${s.section?.name || ""}`.trim(),
-      startTime: s.startTime,
-      endTime: s.endTime,
+      startTime: s.start_time,
+      endTime: s.end_time,
     })),
     myHomework: myHomework.map((h) => ({
-      id: h.id, title: h.title, class: h.class?.name || "—", subject: h.subject?.name || "—", dueDate: h.dueDate,
+      id: h.id, title: h.title, class: h.class?.name || "—", subject: h.subject?.name || "—", dueDate: h.due_date,
     })),
     myLeaves: myLeaves.map((l) => ({
-      id: l.id, fromDate: l.fromDate, toDate: l.toDate, type: l.type, status: l.status, reason: l.reason,
+      id: l.id, fromDate: l.from_date, toDate: l.to_date, type: l.type, status: l.status, reason: l.reason,
     })),
-    recentNotices: recentNotices.map((n) => ({ id: n.id, title: n.title, content: n.content, date: n.date })),
+    recentNotices: recentNoticesFiltered.map((n: any) => ({ id: n.id, title: n.title, content: n.content, date: n.date })),
   });
 }
 
@@ -262,30 +383,35 @@ async function getStudentDashboard(schoolId: string, studentId: string, viewerRo
   const todayStr = today.toISOString().split("T")[0];
   const dayName = today.toLocaleDateString("en-US", { weekday: "long" });
 
-  // Student info
-  const student = await db.student.findUnique({
-    where: { id: studentId },
-    include: { class: true, section: true },
-  });
+  // Student info (with class + section as aliased objects matching Prisma shape)
+  const { data: studentRaw } = await supabaseAdmin
+    .from("students")
+    .select("*, class:classes(*), section:sections(*)")
+    .eq("id", studentId)
+    .maybeSingle();
+  const student: any = studentRaw;
 
   if (!student) {
     return NextResponse.json({ error: "Student not found" }, { status: 404 });
   }
 
-  const studentName = `${student.firstName} ${student.lastName}`;
+  const studentName = `${student.first_name} ${student.last_name}`;
   const studentInfo = {
     name: studentName,
-    admissionNumber: student.admissionNumber,
+    admissionNumber: student.admission_number,
     className: student.class?.name || "—",
     sectionName: student.section?.name || "—",
     photo: student.photo,
   };
 
   // Attendance
-  const allAttendance = await db.studentAttendance.findMany({
-    where: { studentId },
-    orderBy: { date: "asc" },
-  });
+  const { data: allAttendanceRaw } = await supabaseAdmin
+    .from("student_attendance")
+    .select("*")
+    .eq("student_id", studentId)
+    .order("date", { ascending: true });
+  const allAttendance: any[] = (allAttendanceRaw ?? []) as any[];
+
   const presentCount = allAttendance.filter((a) => a.status === "present").length;
   const lateCount = allAttendance.filter((a) => a.status === "late").length;
   const absentCount = allAttendance.filter((a) => a.status === "absent").length;
@@ -307,59 +433,74 @@ async function getStudentDashboard(schoolId: string, studentId: string, viewerRo
     });
   }
 
-  // Fees
-  const studentFees = await db.studentFee.findMany({
-    where: { studentId },
-    include: { feeStructure: true, payments: true },
-  });
-  const feeTotal = studentFees.reduce((s, f) => s + f.totalAmount, 0);
-  const feePaid = studentFees.reduce((s, f) => s + f.paidAmount, 0);
-  const feeDue = studentFees.reduce((s, f) => s + f.dueAmount, 0);
+  // Fees (feeStructure + payments aliased to match Prisma relation names)
+  const { data: studentFeesRaw } = await supabaseAdmin
+    .from("student_fees")
+    .select("*, feeStructure:fee_structures(*), payments:fee_payments(*)")
+    .eq("student_id", studentId);
+  const studentFees: any[] = (studentFeesRaw ?? []) as any[];
+
+  const feeTotal = studentFees.reduce((s, f) => s + Number(f.total_amount ?? 0), 0);
+  const feePaid = studentFees.reduce((s, f) => s + Number(f.paid_amount ?? 0), 0);
+  const feeDue = studentFees.reduce((s, f) => s + Number(f.due_amount ?? 0), 0);
 
   // Homework for this student's class
-  const myHomework = await db.homework.findMany({
-    where: { classId: student.classId, schoolId },
-    orderBy: { dueDate: "asc" },
-    take: 10,
-    include: { class: true, subject: true, staff: true },
-  });
-  const pendingHomework = myHomework.filter((h) => new Date(h.dueDate) >= today).length;
+  const { data: myHomeworkRaw } = await supabaseAdmin
+    .from("homework")
+    .select("*, class:classes(*), subject:subjects(*), staff:staff(*)")
+    .eq("class_id", student.class_id)
+    .eq("school_id", schoolId)
+    .order("due_date", { ascending: true })
+    .limit(10);
+  const myHomework: any[] = (myHomeworkRaw ?? []) as any[];
+  const pendingHomework = myHomework.filter((h) => new Date(h.due_date) >= today).length;
 
   // Exam results for this student
-  const myExamResults = await db.examResult.findMany({
-    where: { studentId },
-    include: { subject: true, exam: true },
-  });
-  const upcomingExams = await db.exam.count({
-    where: { classId: student.classId, schoolId, startDate: { gte: todayStr } },
-  });
+  const { data: myExamResultsRaw } = await supabaseAdmin
+    .from("exam_results")
+    .select("*, subject:subjects(*), exam:exams(*)")
+    .eq("student_id", studentId);
+  const myExamResults: any[] = (myExamResultsRaw ?? []) as any[];
+
+  // Upcoming exams
+  const { count: upcomingExamsCount } = await supabaseAdmin
+    .from("exams")
+    .select("*", { count: "exact", head: true })
+    .eq("class_id", student.class_id)
+    .eq("school_id", schoolId)
+    .gte("start_date", todayStr);
+  const upcomingExams = upcomingExamsCount ?? 0;
 
   // Today's timetable (handle null sectionId gracefully)
-  const myTimetableToday = student.classId
-    ? await db.timetableSlot.findMany({
-        where: {
-          classId: student.classId,
-          ...(student.sectionId ? { sectionId: student.sectionId } : {}),
-          day: dayName,
-        },
-        include: { subject: true, staff: true },
-        orderBy: { period: "asc" },
-      })
-    : [];
+  let myTimetableToday: any[] = [];
+  if (student.class_id) {
+    let q = supabaseAdmin
+      .from("timetable_slots")
+      .select("*, subject:subjects(*), staff:staff(*)")
+      .eq("class_id", student.class_id)
+      .eq("day", dayName);
+    if (student.section_id) {
+      q = q.eq("section_id", student.section_id);
+    }
+    const { data: ttRaw } = await q.order("period", { ascending: true });
+    myTimetableToday = (ttRaw ?? []) as any[];
+  }
 
   // Notices for this student
-  const recentNotices = await db.notice.findMany({
-    where: {
-      schoolId,
-      OR: [
-        { targetAudience: "all" },
-        { targetAudience: "class", targetClassId: student.classId },
-        { targetAudience: "role", targetRole: viewerRole },
-      ],
-    },
-    orderBy: { createdAt: "desc" },
-    take: 5,
-  });
+  const { data: noticesRaw } = await supabaseAdmin
+    .from("notices")
+    .select("*")
+    .eq("school_id", schoolId)
+    .order("created_at", { ascending: false })
+    .limit(50);
+  const recentNoticesFiltered = (noticesRaw ?? [])
+    .filter((n: any) => {
+      if (n.target_audience === "all") return true;
+      if (n.target_audience === "class" && n.target_class_id === student.class_id) return true;
+      if (n.target_audience === "role" && n.target_role === viewerRole) return true;
+      return false;
+    })
+    .slice(0, 5);
 
   return NextResponse.json({
     role: viewerRole, // "student" or "parent"
@@ -381,23 +522,23 @@ async function getStudentDashboard(schoolId: string, studentId: string, viewerRo
     myExamResults: myExamResults.map((r) => ({
       subject: r.subject?.name || "—",
       examName: r.exam?.name || "—",
-      marks: r.marksObtained,
-      maxMarks: r.maxMarks,
+      marks: Number(r.marks_obtained ?? 0),
+      maxMarks: r.max_marks,
       grade: r.grade || "—",
     })),
     myHomework: myHomework.map((h) => ({
       id: h.id,
       title: h.title,
       subject: h.subject?.name || "—",
-      dueDate: h.dueDate,
+      dueDate: h.due_date,
       description: h.description,
     })),
     myTimetableToday: myTimetableToday.map((s) => ({
       period: s.period,
       subject: s.subject?.name || "—",
-      teacher: s.staff ? `${s.staff.firstName} ${s.staff.lastName}` : "—",
-      startTime: s.startTime,
-      endTime: s.endTime,
+      teacher: s.staff ? `${s.staff.first_name} ${s.staff.last_name}` : "—",
+      startTime: s.start_time,
+      endTime: s.end_time,
     })),
     myFees: {
       total: feeTotal,
@@ -405,6 +546,6 @@ async function getStudentDashboard(schoolId: string, studentId: string, viewerRo
       due: feeDue,
       status: feeDue === 0 ? "paid" : feePaid > 0 ? "partial" : "pending",
     },
-    recentNotices: recentNotices.map((n) => ({ id: n.id, title: n.title, content: n.content, date: n.date })),
+    recentNotices: recentNoticesFiltered.map((n: any) => ({ id: n.id, title: n.title, content: n.content, date: n.date })),
   });
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 type RouteParams = { params: Promise<{ id: string }> };
@@ -12,20 +12,43 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
   }
 
   const { id } = await params;
-  const school = await db.school.findUnique({
-    where: { id },
-    include: {
-      _count: {
-        select: { students: true, staff: true, classes: true },
-      },
-    },
-  });
+  const { data: schoolRaw, error } = await supabaseAdmin
+    .from("schools")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
 
-  if (!school) {
+  if (error || !schoolRaw) {
     return NextResponse.json({ error: "School not found" }, { status: 404 });
   }
 
-  return NextResponse.json(school);
+  const school = schoolRaw as Record<string, unknown>;
+
+  // Compute counts
+  const [studentsCountRes, staffCountRes, classesCountRes] = await Promise.all([
+    supabaseAdmin
+      .from("students")
+      .select("*", { count: "exact", head: true })
+      .eq("school_id", id),
+    supabaseAdmin
+      .from("staff")
+      .select("*", { count: "exact", head: true })
+      .eq("school_id", id),
+    supabaseAdmin
+      .from("classes")
+      .select("*", { count: "exact", head: true })
+      .eq("school_id", id),
+  ]);
+
+  const schoolCamel = toCamelCase(school) as Record<string, unknown>;
+  return NextResponse.json({
+    ...schoolCamel,
+    counts: {
+      students: studentsCountRes.count || 0,
+      staff: staffCountRes.count || 0,
+      classes: classesCountRes.count || 0,
+    },
+  });
 }
 
 // PUT /api/schools/[id] — super_admin only: update school details
@@ -36,14 +59,22 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   }
 
   const { id } = await params;
-  const existing = await db.school.findUnique({ where: { id }, select: { id: true } });
-  if (!existing) {
+  const { data: existing, error: existError } = await supabaseAdmin
+    .from("schools")
+    .select("id")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (existError || !existing) {
     return NextResponse.json({ error: "School not found" }, { status: 404 });
   }
 
   const body = await req.json();
 
-  if (body.name !== undefined && (typeof body.name !== "string" || !body.name.trim())) {
+  if (
+    body.name !== undefined &&
+    (typeof body.name !== "string" || !body.name.trim())
+  ) {
     return NextResponse.json({ error: "Name cannot be empty" }, { status: 400 });
   }
 
@@ -53,11 +84,26 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   if (body.phone !== undefined) data.phone = body.phone?.trim() || null;
   if (body.email !== undefined) data.email = body.email?.trim() || null;
   if (body.logo !== undefined) data.logo = body.logo?.trim() || null;
-  if (body.establishedDate !== undefined) data.establishedDate = body.establishedDate || null;
+  if (body.establishedDate !== undefined)
+    data.established_date = body.establishedDate || null;
 
   try {
-    const updated = await db.school.update({ where: { id }, data });
-    return NextResponse.json(updated);
+    const { data: updatedRaw, error: updateError } = await supabaseAdmin
+      .from("schools")
+      .update(data)
+      .eq("id", id)
+      .select("*")
+      .single();
+
+    if (updateError || !updatedRaw) {
+      return NextResponse.json(
+        { error: updateError?.message || "Failed to update school" },
+        { status: 500 }
+      );
+    }
+    return NextResponse.json(
+      toCamelCase(updatedRaw as Record<string, unknown>)
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to update school";
     return NextResponse.json({ error: message }, { status: 500 });
@@ -72,13 +118,24 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams) {
   }
 
   const { id } = await params;
-  const existing = await db.school.findUnique({ where: { id }, select: { id: true, name: true } });
-  if (!existing) {
+  const { data: existing, error: existError } = await supabaseAdmin
+    .from("schools")
+    .select("id, name")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (existError || !existing) {
     return NextResponse.json({ error: "School not found" }, { status: 404 });
   }
 
   try {
-    await db.school.delete({ where: { id } });
+    const { error: deleteError } = await supabaseAdmin
+      .from("schools")
+      .delete()
+      .eq("id", id);
+    if (deleteError) {
+      return NextResponse.json({ error: deleteError.message }, { status: 500 });
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to delete school";

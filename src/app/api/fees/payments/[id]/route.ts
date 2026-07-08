@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // GET — single payment (for receipt view)
@@ -15,53 +15,48 @@ export async function GET(
 
   const { id } = await params;
 
-  const payment = await db.feePayment.findFirst({
-    where: {
-      id,
-      studentFee: { student: { schoolId: user.schoolId } },
-    },
-    include: {
-      studentFee: {
-        include: {
-          student: {
-            include: {
-              class: { select: { id: true, name: true } },
-              section: { select: { id: true, name: true } },
-            },
-          },
-          feeStructure: { include: { items: true } },
-          // All payments on this student fee — for payment history on the receipt
-          payments: { orderBy: { paymentDate: "asc" } },
-        },
-      },
-    },
-  });
+  const { data: payment, error } = await supabaseAdmin
+    .from("fee_payments")
+    .select(
+      "*, student_fees!inner(*, students(id, school_id, first_name, last_name, admission_number, classes(id, name), sections(id, name)), fee_structures(*, fee_items(*)), fee_payments(*))"
+    )
+    .eq("id", id)
+    .eq("student_fees.students.school_id", user.schoolId)
+    .maybeSingle();
 
-  if (!payment) {
+  if (error || !payment) {
     return NextResponse.json({ error: "Payment not found" }, { status: 404 });
   }
+
+  const studentFee = payment.student_fees as Record<string, unknown>;
 
   // Role-based access for student/parent
   if (
     (user.role === "student" || user.role === "parent") &&
     user.studentId &&
-    payment.studentFee.studentId !== user.studentId
+    (studentFee.student_id as string) !== user.studentId
   ) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Fetch school info for the receipt letterhead
-  const school = await db.school.findUnique({
-    where: { id: user.schoolId },
-    select: {
-      id: true,
-      name: true,
-      address: true,
-      phone: true,
-      email: true,
-      logo: true,
-    },
+  // Sort payments asc by payment_date for the receipt history
+  const payments = (studentFee.fee_payments as Array<Record<string, unknown>>) || [];
+  payments.sort((a, b) => {
+    const pa = (a.payment_date as string) || "";
+    const pb = (b.payment_date as string) || "";
+    return pa.localeCompare(pb);
   });
+  studentFee.fee_payments = payments;
 
-  return NextResponse.json({ payment, school });
+  // Fetch school info for the receipt letterhead
+  const { data: school } = await supabaseAdmin
+    .from("schools")
+    .select("id, name, address, phone, email, logo")
+    .eq("id", user.schoolId)
+    .single();
+
+  return NextResponse.json({
+    payment: toCamelCase(payment as Record<string, unknown>),
+    school: toCamelCase(school as Record<string, unknown> | null),
+  });
 }

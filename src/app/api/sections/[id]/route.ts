@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 type RouteParams = { params: Promise<{ id: string }> };
+
+const SECTION_SELECT =
+  "id, name, class_id, class_teacher_id, created_at, class_teacher:staff!sections_class_teacher_fk(id, first_name, last_name, employee_id)";
 
 // PUT /api/sections/[id] — update a section. Supports renaming and assigning
 // the class teacher. To unset the class teacher pass `classTeacherId: null`.
@@ -15,11 +18,14 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   const { id } = await params;
 
   // Find the section and verify school scope via the class relation.
-  const section = await db.section.findUnique({
-    where: { id },
-    include: { class: { select: { schoolId: true } } },
-  });
-  if (!section || section.class.schoolId !== user.schoolId) {
+  const { data: section } = await supabaseAdmin
+    .from("sections")
+    .select(`id, class:classes(school_id)`)
+    .eq("id", id)
+    .maybeSingle();
+
+  const classRow = section?.class as { school_id?: string } | null | undefined;
+  if (!section || !classRow || classRow.school_id !== user.schoolId) {
     return NextResponse.json({ error: "Section not found" }, { status: 404 });
   }
 
@@ -30,35 +36,39 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const data: { name?: string; classTeacherId?: string | null } = {};
+  const updateData: Record<string, unknown> = {};
   if (typeof body.name === "string" && body.name.trim()) {
-    data.name = body.name.trim();
+    updateData.name = body.name.trim();
   }
   if (body.classTeacherId === null) {
-    data.classTeacherId = null;
+    updateData.class_teacher_id = null;
   } else if (typeof body.classTeacherId === "string" && body.classTeacherId) {
-    const staff = await db.staff.findFirst({
-      where: { id: body.classTeacherId, schoolId: user.schoolId },
-    });
-    if (staff) data.classTeacherId = staff.id;
+    const { data: staff } = await supabaseAdmin
+      .from("staff")
+      .select("id")
+      .eq("id", body.classTeacherId)
+      .eq("school_id", user.schoolId)
+      .maybeSingle();
+    if (staff) updateData.class_teacher_id = staff.id;
   }
 
-  const updated = await db.section.update({
-    where: { id },
-    data,
-    include: {
-      classTeacher: {
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          employeeId: true,
-        },
-      },
-    },
-  });
+  const { data: updated, error } = await supabaseAdmin
+    .from("sections")
+    .update(updateData)
+    .eq("id", id)
+    .select(SECTION_SELECT)
+    .single();
 
-  return NextResponse.json({ section: updated });
+  if (error || !updated) {
+    return NextResponse.json(
+      { error: "Failed to update section" },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({
+    section: toCamelCase(updated as unknown as Record<string, unknown>),
+  });
 }
 
 // DELETE /api/sections/[id] — delete a section.
@@ -70,15 +80,24 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams) {
 
   const { id } = await params;
 
-  const section = await db.section.findUnique({
-    where: { id },
-    include: { class: { select: { schoolId: true } } },
-  });
-  if (!section || section.class.schoolId !== user.schoolId) {
+  const { data: section } = await supabaseAdmin
+    .from("sections")
+    .select(`id, class:classes(school_id)`)
+    .eq("id", id)
+    .maybeSingle();
+
+  const classRow = section?.class as { school_id?: string } | null | undefined;
+  if (!section || !classRow || classRow.school_id !== user.schoolId) {
     return NextResponse.json({ error: "Section not found" }, { status: 404 });
   }
 
-  await db.section.delete({ where: { id } });
+  const { error } = await supabaseAdmin.from("sections").delete().eq("id", id);
+  if (error) {
+    return NextResponse.json(
+      { error: "Failed to delete section" },
+      { status: 500 }
+    );
+  }
 
   return NextResponse.json({ success: true });
 }

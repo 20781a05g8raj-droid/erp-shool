@@ -1,0 +1,416 @@
+   700→   - Split-screen layout: left = immersive branded panel (hidden on mobile), right = login form card.
+   701→   - Left panel: `gradient-mesh-bg` animated 6-stop mesh background + masked grid pattern overlay (radial mask for soft edges) + 3 floating glass orbs (different sizes, durations 12/14/16s, varied colors).
+   702→   - Left panel content: glass logo (white/15 backdrop-blur), "Trusted by 500+ schools" pill badge, big bold white tagline (4xl→5xl, tracking-tight, leading-[1.1]) with gradient white text accent, descriptive paragraph, 3 feature cards (glass with hover lift + bg shift), bottom stats row (avatar stack + "500+ Schools" + "99.9% Uptime").
+   703→   - Right panel: subtle `mesh-bg` (only on mobile when left hidden), centered glass-card with staggered Framer Motion entrance (itemVariants staggerChildren 0.08).
+   704→   - Form: rounded-xl inputs (h-11) with focus-within icon color change, gradient "Sign in" button with shine sweep animation on hover (translate-x via-white/20), ArrowRight icon translates on hover.
+   705→   - Quick demo login: 2-col grid, max-h-48 scroll, each button uses motion.button with whileHover y:-1, whileTap scale 0.98, gradient-tinted on hover.
+   706→   - Mobile brand header inside the card (lg:hidden).
+   707→   - Footer "Terms / Privacy" line below card.
+   708→   - Preserved EXACT logic: `useAuthStore` setUser, fetch `/api/auth/login`, `localStorage.setItem("erp_user_id", data.user.id)`, toast, demoAccounts array (8 roles), quickLogin function. All props/logic unchanged.
+   709→
+   710→3. sidebar.tsx (FULL REWRITE)
+   711→   - Animated `width` via Framer Motion (76 collapsed / 264 expanded, ease cubic-bezier).
+   712→   - Top border glow: pseudo-element `before` with gradient `from-transparent via-primary/30 to-transparent`.
+   713→   - Logo: gradient-primary rounded-xl square with inner white/25 highlight overlay.
+   714→   - Nav items: rounded-xl, hover translate-x-0.5 + scale-110 on icon. Active state uses TWO `layoutId` animated layers: (a) `activeNavPill` — gradient-primary background pill that slides between items via spring physics (stiffness 380, damping 32); (b) `activeAccentBar` — left vertical white bar (w-1, h-5). Plus subtle hover bg for inactive items.
+   715→   - Collapse toggle: `PanelLeftClose` (expanded) / `PanelLeft` (collapsed) icons with smooth transition.
+   716→   - User section: avatar with gradient ring (`-inset-0.5 gradient-primary opacity-80` + `ring-2 ring-sidebar`), gradient bg card (`bg-sidebar-accent/40`), name + role with green status dot, logout button. When collapsed: avatar only (logout hidden, user expands).
+   717→   - Mobile drawer: backdrop `bg-background/40 backdrop-blur-md`.
+   718→   - Preserved EXACT props interface `{ mobileOpen, setMobileOpen, collapsed, setCollapsed }` and `useAuthStore` for user/currentModule/setModule/logout.
+   719→
+   720→4. topbar.tsx (FULL REWRITE)
+   721→   - Sticky h-16 with `bg-background/80 backdrop-blur-xl`, border-b, + subtle bottom gradient line (pseudo: `from-transparent via-border to-transparent`).
+   722→   - Module title: `font-bold tracking-tight`, paired with a "Live" badge (`bg-primary/10 text-primary` uppercase tracked pill).
+   723→   - Premium search: rounded-xl, `bg-muted/50 border-transparent focus-visible:bg-background focus-visible:border-primary/30`, search icon color-change on focus, `⌘K` kbd hint (with Command icon, hidden on smaller screens).
+   724→   - Theme toggle: ghost icon button, Sun/Moon rotate + scale transition (300ms) with absolute positioning for swap.
+   725→   - Notifications: bell with animated pulsing red dot (`ring-2 ring-background animate-pulse`). Dropdown has header with "N new" badge, list items with type-colored icon squares (success/info/warning/error — `CheckCircle2`, `Info`, `AlertTriangle`, `XCircle`), bottom "View all" link.
+   726→   - User menu: gradient ring around avatar (`-inset-0.5 gradient-primary opacity-60 group-hover:opacity-100`), name+role hidden on mobile, ChevronDown. Dropdown has gradient-primary header (white text on indigo), avatar, role badge pill, then items: My Profile, Settings, Sign out (destructive).
+   727→   - Preserved EXACT props `{ onMenuClick }`, `useAuthStore` for user/currentModule/logout, `useTheme` for theme, `ALL_MODULES` for label.
+   728→
+   729→5. stats-card.tsx (ENHANCE)
+   730→   - Glass-card with rounded-2xl + `hover-lift` (translateY -3 + shadow-lg).
+   731→   - Gradient border on hover: absolutely positioned div using mask-composite `xor` technique with 1px padding + linear-gradient(from→via→to).
+   732→   - Radial glow: `-top-12 -right-12 w-32 h-32 rounded-full bg-primary/10 blur-3xl` opacity 0→100 on hover.
+   733→   - Icon: 11×11 rounded-xl with `bg-primary/10` tinted bg + soft outer glow (`blur-md opacity-25 group-hover:opacity-45` using `currentColor` for color-aware glow), icon scales 1.05 on hover.
+   734→   - Value: `text-[28px] tabular-nums font-bold tracking-tight`.
+   735→   - Trend badge: tabular-nums, refined emerald/red tints.
+   736→   - Props interface UNCHANGED: `{ title, value, icon, trend, trendLabel, color, delay }`. `color` continues to be a text-color class (e.g. `text-emerald-500`) that tints the icon.
+   737→
+   738→6. page-header.tsx (ENHANCE)
+   739→   - Icon: 12×12 rounded-2xl `gradient-primary` square with inner `from-white/25 to-transparent` highlight overlay + outer `blur-lg opacity-20` glow. Icon size bumped to 22px.
+   740→   - Title: 2xl → `lg:text-[28px] font-bold tracking-tight leading-tight`.
+   741→   - Description: `text-sm text-muted-foreground mt-1 max-w-2xl leading-relaxed`.
+   742→   - Action button: `gradient-primary hover-glow shadow-md` + shine sweep animation (`-translate-x-full group-hover:translate-x-full`) + ActionIcon rotates 90° on hover.
+   743→   - Props interface UNCHANGED: `{ title, description, icon, actionLabel, onAction, actionIcon }`.
+   744→
+   745→Verification:
+   746→- `bun run lint` → 0 errors, 0 warnings.
+   747→- `bunx next build` → succeeds, no errors, no warnings.
+   748→- TypeScript: `bunx tsc --noEmit` → 0 errors in any of the modified files (pre-existing errors in unrelated files remain untouched).
+   749→- All 6 files preserve their original export names, function names, and props interfaces — no downstream imports broken.
+   750→- All existing utility class names (`.glass`, `.glass-card`, `.gradient-primary`, `.gradient-text`, `.mesh-bg`) preserved.
+   751→- New utilities added (`.card-premium`, `.shadow-premium`, `.text-gradient`, `.bg-grid`, `.bg-dots`, `.glass-panel`, `.gradient-mesh-bg`, `.gradient-border`, `.hover-lift`, `.hover-glow`, `.shadow-glow`, `.shimmer`, `.gradient-animated`, `.animate-float`, `.animate-glow-pulse`) — opt-in, no conflicts.
+   752→- Works in both light AND dark themes (every utility has `.dark` overrides).
+   753→- Mobile responsive: login stacks vertically with mesh-bg, sidebar becomes drawer, topbar collapses search/user-name on mobile.
+   754→
+   755→Stage Summary:
+   756→The ERP's first impression is now a stunning split-screen login with animated gradient mesh, floating glass orbs, and a clean form with shine-sweep button. The dashboard shell feels like Linear/Vercel: animated sliding active indicator in the sidebar, premium gradient user cards, refined topbar with kbd-hinted search and notification iconography, and stats cards with gradient borders + radial glows on hover. Design system is now consistent (layered shadows, 3-stop gradients, tabular nums, premium focus rings, elegant scrollbars) and ready for the remaining modules to inherit the polish via the existing `.glass-card`, `.gradient-primary`, `.hover-lift` utilities.
+   757→
+   758→---
+   759→Task ID: ROLE-DASH-1
+   760→Agent: Main (Z.ai Code)
+   761→Task: Make dashboard role-aware — student/parent/teacher see only their own data, admin sees school-wide data.
+   762→
+   763→Work Log:
+   764→- Identified problem: dashboard API returned school-wide stats for ALL roles. Student saw "Total Students: 97" and "Fee Collected: ₹31,55,500" which is admin data.
+   765→- Rewrote /api/dashboard/route.ts to return role-specific data:
+   766→  - Admin (school_admin, super_admin, accountant, librarian, transport_manager, hr): school-wide stats (students, staff, fees, attendance, charts, notices)
+   767→  - Teacher (staffId): myClasses, myStudents, homeworkPosted, todayPeriods, attendanceMarkingTrend, myClassesPerformance, myTimetableToday, myHomework, myLeaves, recentNotices
+   768→  - Student/Parent (studentId): studentInfo, attendancePercent, feePaid, feeDue, pendingHomework, upcomingExams, myAttendanceTrend (30-day calendar), myExamResults, myTimetableToday, myFees, myHomework, recentNotices
+   769→- Rewrote dashboard-module.tsx with 3 view components: AdminDashboard, TeacherDashboard, StudentDashboard. Each renders completely different layout based on data.role.
+   770→- Student/Parent view: greeting with student name + class/section, 4 personal stat cards (My Attendance %, Fee Paid, Pending Homework, Upcoming Exams), 30-day attendance calendar grid with color-coded days, exam results table, today's timetable, fee breakdown card, homework list, notices.
+   771→- Teacher view: greeting with teacher name, 4 stat cards (My Classes, My Students, Homework Posted, Today's Periods), attendance marking bar chart, classes performance chart, today's timetable, recent homework, leaves, notices.
+   772→- Admin view: unchanged — greeting + 4 stat cards + attendance/fee/exam charts + gender/class distribution + recent notices/admissions.
+   773→
+   774→Stage Summary:
+   775→- Verified in browser:
+   776→  - Admin login: "Good morning, Rajesh" + "Admin Portal" badge + "Total Students: 97" ✓
+   777→  - Student login (diya.das): "Good morning, Diya Das" + "Student Portal" badge + "76% My Attendance" + "₹25,500 Fee Paid" — NO admin data ✓
+   778→  - Parent login (parent.diya): "Your child Diya Das's progress" + "Parent Portal" badge + "76% Child's Attendance" — only child's data ✓
+   779→  - Teacher login (anita.verma): "Good morning, Anita" + "Teacher Portal" badge + "My Classes, My Students, Homework Posted" — only teacher's data ✓
+   780→- Lint: 0 errors. All 4 roles verified working with correct role-scoped data.
+   781→
+   782→---
+   783→Task ID: FEES-ACCT-1
+   784→Agent: Sub-agent (general-purpose)
+   785→Task: Enhance the Fee Management module into a complete accountant tool — add student-wise fee ledger, defaulters management, daily/monthly collection reports, professional printable/downloadable receipts, and PDF export.
+   786→
+   787→Work Log:
+   788→
+   789→1. NEW API: /api/fees/ledger/route.ts (GET)
+   790→   - Accountant's master ledger view — every student's complete fee picture in one API call.
+   791→   - Returns per-student: name, admission number, class, section, fee structure, total/paid/due amounts, status, due date, full payment history array (receipt no, amount, method, date, collected by), last payment (for quick view), days overdue (computed), parent contact info.
+   792→   - Filters: ?classId=&status=&search=
+   793→   - Refreshes overdue statuses on each call (cheap pass through all student fees of the school).
+   794→   - Role-based scoping: student/parent only see their own.
+   795→   - Sorted by student name (firstName asc, lastName asc).
+   796→   - Auth: `getCurrentUser()` + `user.schoolId` 401 check.
+   797→
+   798→2. NEW API: /api/fees/defaulters/route.ts (GET + POST)
+   799→   - GET: returns all students with pending/partial/overdue fees (dueAmount > 0).
+   800→     - Per-defaulter: student info, parent phone/email, fee structure, total/paid/due, due date, days overdue (computed), severity bucket (critical >30 days, overdue >7 days, pending), last payment.
+   801→     - Filters: ?classId=&severity= (overdue = any days overdue, critical = >30 days)
+   802→     - Sorted by due amount DESC (biggest defaulters first).
+   803→     - Summary: totalDue, avgDaysOverdue, critical/overdue/pending counts.
+   804→     - Blocked for student/parent role (no business seeing others).
+   805→   - POST: logs a reminder by creating a Notice targeted to "parent" role. Records contact method (sms/email/call), outstanding due, parent contact. Returns noticeId + success message. (Lightweight — no separate reminder table; uses existing Notice table.)
+   806→
+   807→3. NEW API: /api/fees/collection-report/route.ts (GET)
+   808→   - Daily/period collection report.
+   809→   - Query: ?preset=today|thisWeek|thisMonth|custom&from=&to=
+   810→   - Defaults to "today" preset.
+   811→   - "thisWeek" computes Monday of current week (week starts Monday).
+   812→   - "thisMonth" computes first day of current month.
+   813→   - Returns: period {from, to, preset}, totalCollected, transactions count, breakdown by method (cash/online/cheque with amount + count), dailyChart (every day in range with label, amount, count — filled with zeros for missing days), payments list (receipt no, student name+admission+class, amount, method, date, collected by, transaction id, remarks, fee structure).
+   814→   - Role-based scoping: student/parent only see their own payments.
+   815→
+   816→4. ENHANCED API: /api/fees/payments/[id]/route.ts (GET)
+   817→   - Now returns `{ payment, school }` instead of just `{ payment }`.
+   818→   - Payment includes: studentFee (with student + class + section + feeStructure + items + ALL previous payments on this student fee for payment history on the receipt).
+   819→   - School: queried from School table by user.schoolId — name, address, phone, email, logo (for the receipt letterhead).
+   820→   - Auth + role-based access preserved.
+   821→
+   822→5. FULL REWRITE: src/components/erp/modules/fees-module.tsx (~2700 lines)
+   823→   - Tab structure: role-based via `useAuthStore`.
+   824→     - accountant/school_admin/super_admin: Overview | Structures | Student Fees | Ledger | Defaulters | Reports | Receipts (7 tabs — Receipts remains accessible to all)
+   825→     - student/parent: Overview | My Fees (Student Fees tab) | Receipts (3 tabs — accountant-only tabs are conditionally rendered out)
+   826→   - Tab: Overview (kept + minor polish) — 4 stat cards (Collected This Month, Total Dues, Defaulters, Collection Rate) + 6-month collection bar chart + status breakdown pie + recent payments table.
+   827→   - Tab: Fee Structures (kept) — grid view with CRUD via dropdown menu, "Assign to Class" action.
+   828→   - Tab: Student Fees (kept) — search + class + status filters, table with Pay button + dropdown for receipts/details.
+   829→   - Tab: Ledger (NEW) — accountant's master view:
+   830→     - 3-card summary strip (Total Expected, Total Collected, Total Due).
+   831→     - Filter bar: search, class select, status select, Apply button.
+   832→     - Comprehensive table: Student (name+admission+class) | Fee Structure (name+term+due) | Total | Paid | Due | Status | Last Payment (receipt# + date) | Actions (History button + Pay button if not paid).
+   833→     - "History" button opens LedgerHistoryDialog (max-w-2xl) showing student summary + complete payment history table with receipt download buttons.
+   834→     - Empty state.
+   835→   - Tab: Defaulters (NEW) — students with pending dues:
+   836→     - 4 stat cards (Total Defaulters, Total Due Amount, Avg Days Overdue, Critical >30 days).
+   837→     - Filter bar: class, severity.
+   838→     - Table: Student | Class | Parent Contact (phone + email with icons) | Due Amount (bold red) | Due Date | Days Overdue (color-coded badge) | Status | Actions (Reminder bell icon button + Pay button).
+   839→     - Severity color-coding: critical (>30 days) = red bg row + red badge; overdue (>7 days) = amber badge; pending = yellow badge.
+   840→     - Reminder logs a notice via POST /api/fees/defaulters (toast confirmation).
+   841→     - Empty state: "All fees paid! 🎉" with CheckCircle icon.
+   842→   - Tab: Collection Report (NEW) — daily/monthly collection:
+   843→     - Period selector: Today | This Week | This Month | Custom Range (reveals From/To date inputs when Custom selected).
+   844→     - Generate button + Export CSV button.
+   845→     - 5 stat cards: Total Collected, Cash, Online, Cheque, Transactions count.
+   846→     - Daily Collection line chart (Recharts LineChart with monotone curve, emerald stroke).
+   847→     - By Payment Method pie chart (cash=green, online=blue, cheque=amber).
+   848→     - All Transactions table: Receipt # | Student (name+admission) | Class | Method | Date | Collected By | Amount | Receipt icon button.
+   849→     - CSV export: downloads `collection-report-<from>-to-<to>.csv` with proper escaping.
+   850→   - Tab: Receipts (kept) — table of all payments across student fees with View button.
+   851→
+   852→   - ENHANCED RECEIPT (major upgrade — ProfessionalReceipt component):
+   853→     - A4-portrait aspect ratio container (max-w-[800px], white bg, 2px gray-800 border, rounded-lg, p-6 md:p-8).
+   854→     - Watermark: faint school name diagonally across receipt (CSS rotate(-30deg), opacity 0.05, 6rem font, absolute centered, z-index 0).
+   855→     - Letterhead: school logo circle (first letter of school name on gray-900 bg) + school name (2xl bold tracking-wide) + address + phone + email. Bottom border 2px gray-800.
+   856→     - Receipt title row: "FEE PAYMENT RECEIPT" (lg uppercase tracking-widest) on left + Receipt No label/value on right.
+   857→     - Meta row (3 columns): Receipt No | Date | Payment Method — each in a bordered gray-50 box with uppercase label.
+   858→     - Student details section: bordered box with "STUDENT DETAILS" uppercase label + 2-col grid (Name, Admission No, Class+Section, Father's Name, Fee Structure, Term).
+   859→     - Fee breakdown table: dark header (gray-800 bg, white text) with S.No | Fee Item | Amount (₹). Falls back to single row "{fs.name} | totalAmount" if no items. Total Fee row in gray-100 footer.
+   860→     - Payment summary boxes (4 cols): Previous Balance (gray) | Amount Paid (green border+bg, highlighted) | Total Paid (gray) | Balance Due (red border+bg, highlighted).
+   861→     - Amount in words: amber-bg box "Rupees in words: [numberToWords(amount)]" — implements Indian numbering (handles up to crores, with lakh/thousand/hundred; supports paise).
+   862→     - Transaction details (if present): Transaction ID (mono) + Remarks.
+   863→     - Payment History (if >1 payments): bordered mini-table showing all payments on this student fee (Receipt #, Date, Method, Amount).
+   864→     - Footer: "Collected By" + italic "This is a computer-generated receipt and does not require a physical signature." on left; 3 signature blocks on right (Accountant, Principal with border-top signature lines, School Stamp circle with Stamp icon + dashed border).
+   865→
+   866→   - PDF DOWNLOAD (seamless print-to-PDF via hidden iframe):
+   867→     - `printReceiptInIframe(payment, school)` helper:
+   868→       - Builds a complete standalone HTML document string with inline CSS (full receipt markup, watermark, letterhead, tables, signature lines, @page A4 margin).
+   869→       - Creates a hidden iframe (position fixed, 0x0, visibility hidden).
+   870→       - Writes the HTML into the iframe's document.
+   871→       - On iframe load, calls `iframe.contentWindow.focus()` + `iframe.contentWindow.print()`.
+   872→       - Removes iframe after 1.5s.
+   873→       - User gets the browser's print dialog where they can choose "Save as PDF" as destination — saves only the receipt (not the surrounding app UI).
+   874→     - "Download PDF" button in ReceiptDialog triggers this; "Print" button triggers the same (both go through iframe for consistency).
+   875→     - Helper utilities: `escapeHtml()` for safe HTML string building, `formatDateStatic()` for date formatting in the standalone HTML.
+   876→
+   877→   - SHARED HELPERS:
+   878→     - `numberToWords(amount)`: Indian-format number-to-words. Handles crores, lakhs, thousands, hundreds, ones, tens, teens, paise. Returns "Twenty Five Thousand Five Hundred Rupees Only" for 25500. Handles zero, negatives.
+   879→     - `escapeHtml(s)`: HTML entity escaping for safe iframe content.
+   880→     - `formatDateStatic(dateStr)`: same logic as `formatDate` but usable in non-React context (iframe HTML).
+   881→     - All existing helpers preserved: `apiFetch`, `formatDate`, `formatCurrency`, `STATUS_COLORS`, `PAYMENT_METHOD_LABELS`, `PAYMENT_METHOD_COLORS`.
+   882→
+   883→   - Tab-driven data fetching: useEffect on activeTab triggers the appropriate fetch (dashboard/structures/studentFees/ledger/defaulters/reports). Refresh handler routes to the correct fetcher for the active tab. Record Payment dialog's onSaved refreshes the active tab + any affected tabs (ledger if on ledger tab, defaulters if on defaulters tab, reports if on reports tab).
+   884→
+   885→6. Lint: `bun run lint` → 0 errors, 0 warnings.
+   886→   TypeScript: full project `bunx tsc --noEmit` shows 0 errors in any of the new/modified files (pre-existing errors in unrelated files like seed.ts/dashboard.ts remain untouched).
+   887→
+   888→Stage Summary:
+   889→The Fee Management module is now a complete accountant tool. When an accountant logs in, they get 7 tabs (Overview, Structures, Student Fees, Ledger, Defaulters, Reports, Receipts):
+   890→1. **Ledger** — opens to see EVERY student's complete fee picture in one searchable/filterable table, with summary cards showing total expected/collected/due. Click "History" on any row → full payment history dialog with per-payment receipt download buttons.
+   891→2. **Defaulters** — instant view of who hasn't paid, sorted by due amount (biggest defaulters first), color-coded by severity (red for >30 days, amber for >7 days, yellow for pending), with parent contact info and one-click reminder logging + Pay button.
+   892→3. **Reports** — daily/weekly/monthly collection report with period selector, 5 stat cards (total + breakdown by cash/online/cheque + transactions), line chart of daily collection, pie chart by method, full transactions table, and CSV export.
+   893→4. **Professional Receipt** — when viewing any payment, the receipt looks like a real school document: letterhead with school logo+name+address+phone+email, watermark, receipt meta row, student details box, fee breakdown table with dark header, 4-box payment summary with highlighted paid/balance boxes, amount in words (Indian format), payment history table, and signature lines for Accountant + Principal + School Stamp area. Both "Print" and "Download PDF" use a hidden iframe with a complete standalone HTML document, triggering the browser's print dialog where the user can save as PDF — gets only the receipt, not the app UI.
+   894→
+   895→Student/parent role sees only 3 tabs (Overview, My Fees, Receipts) — accountant-only tabs are hidden. All API routes enforce `getCurrentUser()` + schoolId 401 check + schoolId scoping + role-based filtering. Number-to-words handles up to crores with proper Indian grouping (lakh/crore rather than million/billion).
+   896→
+   897→
+   898→---
+   899→Task ID: FEES-ACCT-1
+   900→Agent: Main (Z.ai Code) + Subagent
+   901→Task: Enhance Fee Management module for accountant — detailed fee tracking, defaulters, collection reports, professional printable/downloadable receipts.
+   902→
+   903→Work Log:
+   904→- Added 3 new API routes:
+   905→  - /api/fees/ledger — complete fee ledger for all students with full payment history
+   906→  - /api/fees/defaulters — all students with pending dues, days overdue, severity
+   907→  - /api/fees/collection-report — daily/monthly collection with method breakdown
+   908→- Enhanced /api/fees/payments/[id] to include school info (name, address, phone, email) for receipt letterhead
+   909→- Rewrote fees-module.tsx with 7 tabs for accountant: Overview, Fee Structures, Student Fees, Ledger, Defaulters, Reports, Receipts
+   910→- Ledger tab: master view of every student's fee status with History dialog showing all payments + receipt download buttons
+   911→- Defaulters tab: students with pending dues, severity color-coding (red >30 days, amber >7 days), reminder option, Pay button
+   912→- Reports tab: period selector (today/week/month/custom), stats by payment method, line chart, pie chart, CSV export
+   913→- Professional receipt: A4 portrait, school letterhead with logo, receipt meta row, student details, fee breakdown table, payment summary boxes, amount in words (Indian format), signature lines, watermark
+   914→- Download PDF: hidden iframe approach with standalone HTML + @page A4 CSS → print dialog → Save as PDF
+   915→- Print button: direct window.print() with print-only styles
+   916→
+   917→Stage Summary:
+   918→- Verified in browser with accountant login (deepak.mehta@greenwood.edu):
+   919→  - 7 tabs visible: Overview, Fee Structures, Student Fees, Ledger, Defaulters, Reports, Receipts ✓
+   920→  - Ledger: 97 students with fee details (Total ₹58,56,000, Collected ₹31,55,500, Due ₹27,00,500) ✓
+   921→  - Receipts tab: all payments listed with View buttons ✓
+   922→  - Professional receipt dialog: school letterhead, student details, fee breakdown table, payment summary, amount in words ("Sixty Nine Thousand Rupees Only"), Print + Download PDF buttons ✓
+   923→  - VLM rated receipt 8/10 "highly professional, closely resembles a real school receipt"
+   924→- Lint: 0 errors. All APIs return 200.
+   925→
+   926→---
+   927→Task ID: ROLE-PERMS-1
+   928→Agent: Main (Z.ai Code)
+   929→Task: Role-based permission system — restrict each role to only their allowed actions.
+   930→
+   931→Work Log:
+   932→- Created /src/lib/permissions.ts with permission matrix + helper functions for all module actions
+   933→- Updated /src/lib/navigation.ts: added "timetable" + "attendance" + "students" to HR's modules
+   934→- Updated students-module.tsx: Add/Edit/Delete buttons conditionally rendered via canManageStudents() — only accountant/school_admin/super_admin see them; teacher/transport_manager see read-only view
+   935→- Updated staff-module.tsx: Add/Edit/Delete via canManageStaff() — only HR/school_admin/super_admin
+   936→- Updated attendance-module.tsx: getRoleTabs() now uses canMarkStudentAttendance() and canMarkStaffAttendance() — teacher gets only "Mark Attendance" + "Calendar" tabs (NO "Staff" tab); HR gets all 3 tabs
+   937→- Updated timetable-module.tsx: canEdit now uses canEditTimetable() — teacher = read-only view; HR/school_admin/super_admin = full edit
+   938→- Added API role checks (403 Forbidden):
+   939→  - POST /api/students → canManageStudents (accountant/admin only)
+   940→  - PUT/DELETE /api/students/[id] → canManageStudents
+   941→  - POST /api/staff → canManageStaff (HR/admin only)
+   942→  - PUT/DELETE /api/staff/[id] → canManageStaff
+   943→  - POST /api/timetable → canEditTimetable (HR/admin only)
+   944→  - DELETE /api/timetable/[id] → canEditTimetable
+   945→  - POST /api/attendance/staff → canMarkStaffAttendance (HR/admin only, NOT teacher)
+   946→
+   947→Stage Summary:
+   948→- API permission tests (all passed):
+   949→  - Teacher POST /api/students → 403 ✅
+   950→  - Teacher POST /api/timetable → 403 ✅
+   951→  - Teacher POST /api/attendance/staff → 403 ✅
+   952→  - Accountant POST /api/students → 201 ✅
+   953→  - HR POST /api/timetable → passed permission check ✅
+   954→- UI tests (teacher):
+   955→  - Students: no "Add Student" button (read-only) ✅
+   956→  - Attendance: only "Mark Attendance" + "Calendar" tabs (no Staff tab) ✅
+   957→  - Timetable: no "Save" button (read-only) ✅
+   958→- UI tests (HR):
+   959→  - Sidebar: Dashboard, Students, Staff, Attendance, Timetable, HR & Payroll ✅
+   960→  - Attendance: has "Staff" tab ✅
+   961→  - Staff: has "Add Staff" button ✅
+   962→- Lint: 0 errors
+   963→
+   964→---
+   965→Task ID: SIGNUP-1
+   966→Agent: Main (Z.ai Code)
+   967→Task: Add signup/registration feature — users sign up using email their school registered, role auto-detected.
+   968→
+   969→Work Log:
+   970→- Created /api/auth/signup/route.ts:
+   971→  - Takes email + password + optional name
+   972→  - Checks if profile already exists → 400 "already exists, login instead"
+   973→  - Checks students table by email (student's own email → role=student, parent's email → role=parent)
+   974→  - Checks staff table by email (teaching → teacher, non-teaching by designation: accountant/librarian/transport_manager/hr/school_admin)
+   975→  - If email not in students/staff → 403 "not registered, contact admin"
+   976→  - Creates Profile with detected role, links studentId/staffId, returns user + success message
+   977→- Updated login-screen.tsx with login/signup toggle:
+   978→  - Added mode state ("login" | "signup")
+   979→  - Signup mode shows: Full Name (optional), Email, Password (min 6), Confirm Password
+   980→  - "How it works" info banner explaining the flow
+   981→  - Toggle link: "Don't have an account? Sign up" / "Already have an account? Sign in"
+   982→  - Submit button changes: "Sign in" / "Create account"
+   983→  - Quick demo login only shows in login mode
+   984→- Fixed dashboard API bug: student dashboard crashed when sectionId was null (new students without section assignment). Added null check for sectionId in timetable query.
+   985→
+   986→Stage Summary:
+   987→- API tests:
+   988→  - Signup with unregistered email → 403 ✅
+   989→  - Signup with existing profile email → 400 ✅
+   990→  - Admin adds student with email → student signs up → role=student ✅
+   991→  - Parent email signup → role=parent ✅
+   992→  - Staff email signup → role auto-detected by designation ✅
+   993→- UI tests:
+   994→  - Login page has "Sign up" link ✅
+   995→  - Click "Sign up" → form shows Full Name, Email, Password, Confirm Password ✅
+   996→  - "How it works" banner visible ✅
+   997→  - "Create account" button ✅
+   998→  - Full flow: admin adds Priya → Priya signs up → sees student dashboard ("Good morning, Priya", 0% attendance, Student Portal) ✅
+   999→- Lint: 0 errors
+  1000→
+  1001→---
+  1002→Task ID: USER-MGMT-1
+  1003→Agent: Main (Z.ai Code)
+  1004→Task: Admin User Management — unified interface to add/edit/delete all role-based user accounts.
+  1005→
+  1006→Work Log:
+  1007→- Created /api/users/route.ts (GET list with search+role filter, POST create) — admin only (school_admin, super_admin)
+  1008→- Created /api/users/[id]/route.ts (GET, PUT update, DELETE) — admin only, prevents self-deletion
+  1009→- GET returns enriched data: each profile + linkedInfo (student/staff name + admission/employee id)
+  1010→- POST creates profile with email, password, name, role (8 roles), phone, status, optional studentId/staffId link
+  1011→- PUT updates name, role, phone, status, password reset (optional), studentId/staffId link
+  1012→- DELETE removes profile (prevents admin from deleting themselves)
+  1013→- Added "users" module to navigation for school_admin and super_admin (with UserCircle icon, labeled "User Management")
+  1014→- Added UsersModule to module-router.tsx
+  1015→- Created users-module.tsx — full admin interface:
+  1016→  - PageHeader with "Add User" button
+  1017→  - 4 StatsCards: Total Users, Active, Teachers, Students
+  1018→  - Filter bar: search by name/email + role filter dropdown (All Roles + 8 role options)
+  1019→  - Users table: avatar+name+email, role badge (with role-specific icon), linked-to info (student/staff), phone, status badge, actions dropdown (Edit, Reset Password, Delete)
+  1020→  - "You" badge next to current admin's own row
+  1021→  - Add User dialog: Full Name, Email, Password, Phone, Role select (8 roles), Status select
+  1022→  - Edit User dialog: same fields, email read-only, password optional (leave blank to keep)
+  1023→  - Reset Password dialog: dedicated password reset with min 6 char validation
+  1024→  - Delete confirmation with AlertDialog (prevents accidental deletion)
+  1025→  - Empty state with CTA
+  1026→  - Framer Motion animations on rows
+  1027→
+  1028→Stage Summary:
+  1029→- API tests:
+  1030→  - GET /api/users → returns 11 users with linked info ✅
+  1031→  - POST /api/users → creates user with role (tested accountant) → 201 ✅
+  1032→  - Teacher role blocked from /api/users → 403 ✅
+  1033→- UI tests:
+  1034→  - Admin sidebar shows "User Management" ✅
+  1035→  - Stats: 11 Total Users, 11 Active, 1 Teacher, 3 Students ✅
+  1036→  - Table with 11 users, role badges, linked info, status ✅
+  1037→  - Add User dialog with all fields (Name, Email, Password, Phone, Role, Status) ✅
+  1038→  - Edit, Reset Password, Delete actions in dropdown ✅
+  1039→  - "You" badge on admin's own row ✅
+  1040→  - VLM rated: "professional and well-designed, clean modern layout, clear visual hierarchy"
+  1041→- Lint: 0 errors
+  1042→- Admin can now manage ALL user accounts from one place — add teachers, students, parents, staff, accountants, librarians, transport managers, HR, all from User Management module
+  1043→
+  1044→---
+  1045→Task ID: SUPABASE-SETUP-1
+  1046→Agent: Main (Z.ai Code)
+  1047→Task: Prepare Supabase database structure — SQL schema, RLS policies, storage buckets, client setup.
+  1048→
+  1049→Work Log:
+  1050→- Created /supabase/schema.sql (complete SQL file ~500 lines):
+  1051→  - 14 enum types (user_role, student_status, staff_type, fee_status, payment_method, attendance_status, leave_status, leave_type, exam_type, book_issue_status, event_type, certificate_type, notice_audience, payroll_status)
+  1052→  - 28 tables matching Prisma schema (schools, profiles, classes, sections, subjects, class_subjects, staff, students, student_attendance, staff_attendance, timetable_slots, exams, exam_results, homework, fee_structures, fee_items, student_fees, fee_payments, library_books, book_issues, transport_routes, vehicles, student_transport, staff_leaves, payrolls, notices, school_events, certificates)
+  1053→  - All foreign keys with proper cascade/delete behaviors
+  1054→  - Performance indexes on common query columns
+  1055→  - Triggers: auto-update updated_at, auto-create profile on auth.users insert
+  1056→  - Helper functions: get_current_school_id(), get_current_role(), is_admin(), get_current_student_id(), get_current_staff_id()
+  1057→  - RLS policies on EVERY table (role-based: super_admin sees all, school_admin sees own school, teacher sees assigned classes, student/parent sees own data, accountant manages fees, librarian manages library, transport_manager manages transport, hr manages staff/payroll)
+  1058→  - 5 storage buckets (student-photos, staff-photos, book-covers, homework-attachments, documents) with read/write policies
+  1059→  - Seed data: Greenwood International School record
+  1060→- Created /supabase/MIGRATION-GUIDE.md — step-by-step setup instructions
+  1061→- Created /.env.example — showing 3 required env vars
+  1062→- Created /src/lib/supabase/client.ts — browser-side Supabase client (uses NEXT_PUBLIC_ vars)
+  1063→- Created /src/lib/supabase/server.ts — server-side client (cookie-based via @supabase/ssr) + admin client (service role key, bypasses RLS)
+  1064→- Installed @supabase/supabase-js and @supabase/ssr packages
+  1065→
+  1066→Stage Summary:
+  1067→- Supabase structure fully prepared. User needs to:
+  1068→  1. Create Supabase project
+  1069→  2. Run supabase/schema.sql in SQL Editor
+  1070→  3. Create super admin user in Auth
+  1071→  4. Set 3 env vars in .env.local (URL, anon key, service role key)
+  1072→  5. Login and start using
+  1073→- Current Prisma + SQLite setup still works (both can coexist during migration)
+  1074→- RLS policies enforce: admin sees all school data, teacher can't edit timetable/staff, student/parent see only own data, accountant manages fees, etc.
+  1075→- All 28 tables ready with proper relationships, indexes, and security
+  1076→
+  1077→---
+  1078→Task ID: SUPABASE-CREDENTIALS-1
+  1079→Agent: Main (Z.ai Code)
+  1080→Task: Add user's Supabase credentials and finalize complete SQL schema with seed data.
+  1081→
+  1082→Work Log:
+  1083→- Set up .env with user's Supabase credentials:
+  1084→  - NEXT_PUBLIC_SUPABASE_URL=https://eyrykqvsbgsqwvqbfazw.supabase.co
+  1085→  - NEXT_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_yLrJYPAOGjfnbObtl8Kr0A_Gxxzqje6
+  1086→  - SUPABASE_SERVICE_ROLE_KEY=sb_secret_ahlPREHSj26pbDRme88scg_9wQoBocS
+  1087→- Expanded supabase/schema.sql from 927 → 1204 lines with full seed data:
+  1088→  - 1 school (Greenwood International School)
+  1089→  - 15 classes (Nursery to Class 12) with fixed UUIDs
+  1090→  - 30 sections (A, B for each class) — generated via DO block
+  1091→  - 12 subjects (English, Math, Science, SST, Hindi, CS, Physics, Chemistry, Biology, PE, Art, Music)
+  1092→  - 12 staff (Principal, VP, 6 teachers, Accountant, Librarian, Transport Mgr, HR Mgr) with real emails
+  1093→  - 10 demo students with class/section assignment, parent emails, blood groups, addresses
+  1094→  - 7 days attendance for all students (random statuses)
+  1095→  - 15 fee structures (one per class) + student fees assignment
+  1096→  - 10 library books with ISBN, categories, shelf locations
+  1097→  - 5 transport routes (North/South/East/West Delhi + Noida) with stops and fares
+  1098→  - 5 vehicles assigned to routes
+  1099→  - 5 notices
+  1100→  - 5 school events (Annual Day, Diwali, Exam, PTM, Sports Day)
+  1101→  - 1 exam (Mid-Term 2024 for Class 10) with exam results for 5 subjects
+  1102→  - 5 homework assignments
+  1103→  - 5 staff leaves (mix of approved/pending/rejected)
+  1104→  - 12 payrolls (current month for all staff)
+  1105→- Fixed a potential issue: library_books seed uses ON CONFLICT (id) but no explicit UUIDs — updated to use ON CONFLICT DO NOTHING
+  1106→
+  1107→Stage Summary:
+  1108→- Complete SQL file ready at /home/z/my-project/supabase/schema.sql (1204 lines)
+  1109→- User can copy-paste entire file into Supabase SQL Editor and Run
+  1110→- Creates: 28 tables, 14 enums, 119 RLS policies, 5 triggers, 14 indexes, 5 storage buckets, + full demo data
+  1111→- After SQL run, user creates super admin in Auth, then runs UPDATE profiles SET role='super_admin' WHERE email='...'
+  1112→- .env configured with real credentials
+  1113→- Supabase client files ready (client.ts, server.ts)
+
+[showing lines 700-1113 of 1115; use offset=1114 with limit to continue reading]

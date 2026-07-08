@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/server";
 import type { Role } from "@/types";
 
 // POST /api/auth/signup
 // User enters email + password + name. System checks if email exists in
-// students or staff tables, determines role, creates a Profile, and logs them in.
+// students or staff tables, determines role, creates auth user + profile.
 export async function POST(req: NextRequest) {
   try {
     const { email, password, name } = await req.json();
@@ -24,11 +25,22 @@ export async function POST(req: NextRequest) {
     }
 
     const normalizedEmail = email.toLowerCase().trim();
+    const supabase = await createSupabaseServerClient();
+    const admin = createSupabaseAdminClient();
 
-    // Check if profile already exists (already signed up)
-    const existingProfile = await db.profile.findUnique({
-      where: { email: normalizedEmail },
-    });
+    // Check if auth user already exists
+    const { data: existingAuth } = await supabase.auth.signInWithPassword({
+      email: normalizedEmail,
+      password,
+    }).catch(() => ({ data: { user: null, session: null }, error: null }));
+
+    // Check if profile already exists
+    const { data: existingProfile } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("email", normalizedEmail)
+      .single();
+
     if (existingProfile) {
       return NextResponse.json(
         { error: "An account with this email already exists. Please login instead." },
@@ -44,46 +56,47 @@ export async function POST(req: NextRequest) {
     let displayName = name?.trim() || "";
 
     // 1. Check students table (student's own email OR parent's email)
-    const student = await db.student.findFirst({
-      where: {
-        OR: [
-          { email: normalizedEmail },
-          { parentEmail: normalizedEmail },
-        ],
-        status: "active",
-      },
-    });
+    const { data: student } = await supabase
+      .from("students")
+      .select("id, first_name, last_name, email, parent_email, school_id")
+      .or(`email.eq.${normalizedEmail},parent_email.eq.${normalizedEmail}`)
+      .eq("status", "active")
+      .single();
 
     if (student) {
       if (student.email === normalizedEmail) {
         role = "student";
-      } else if (student.parentEmail === normalizedEmail) {
+      } else if (student.parent_email === normalizedEmail) {
         role = "parent";
       }
-      schoolId = student.schoolId;
+      schoolId = student.school_id;
       studentId = student.id;
       if (!displayName) {
-        displayName = role === "parent" ? `Parent of ${student.firstName}` : `${student.firstName} ${student.lastName}`;
+        displayName = role === "parent"
+          ? `Parent of ${student.first_name}`
+          : `${student.first_name} ${student.last_name}`;
       }
     }
 
     // 2. If not found in students, check staff table
     if (!role) {
-      const staff = await db.staff.findFirst({
-        where: { email: normalizedEmail, status: "active" },
-      });
+      const { data: staff } = await supabase
+        .from("staff")
+        .select("id, first_name, last_name, email, designation, type, school_id")
+        .eq("email", normalizedEmail)
+        .eq("status", "active")
+        .single();
 
       if (staff) {
-        schoolId = staff.schoolId;
+        schoolId = staff.school_id;
         staffId = staff.id;
         if (!displayName) {
-          displayName = `${staff.firstName} ${staff.lastName}`;
+          displayName = `${staff.first_name} ${staff.last_name}`;
         }
         // Determine role based on staff type + designation
         if (staff.type === "teaching") {
           role = "teacher";
         } else {
-          // Non-teaching: map by designation
           const desig = (staff.designation || "").toLowerCase();
           if (desig.includes("accountant") || desig.includes("finance")) {
             role = "accountant";
@@ -96,7 +109,6 @@ export async function POST(req: NextRequest) {
           } else if (desig.includes("principal") || desig.includes("admin") || desig.includes("director")) {
             role = "school_admin";
           } else {
-            // Default non-teaching staff to HR role (they can view staff directory)
             role = "hr";
           }
         }
@@ -114,31 +126,64 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Create the profile
-    const profile = await db.profile.create({
-      data: {
-        email: normalizedEmail,
-        password: `demo:${password}`, // same format as seed
+    // Create auth user via admin client
+    const { data: authData, error: authError } = await admin.auth.admin.createUser({
+      email: normalizedEmail,
+      password,
+      email_confirm: true, // auto-confirm email
+    });
+
+    if (authError || !authData.user) {
+      return NextResponse.json(
+        { error: authError?.message || "Failed to create account" },
+        { status: 400 }
+      );
+    }
+
+    // Update the profile (trigger auto-creates it, we update with role + links)
+    const { data: profile, error: profileError } = await admin
+      .from("profiles")
+      .update({
         name: displayName,
         role,
-        schoolId,
-        studentId,
-        staffId,
+        school_id: schoolId,
+        student_id: studentId,
+        staff_id: staffId,
         status: "active",
-      },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        schoolId: true,
-        phone: true,
-        avatar: true,
-        status: true,
-        studentId: true,
-        staffId: true,
-      },
-    });
+      })
+      .eq("id", authData.user.id)
+      .select("id, email, name, role, school_id, phone, avatar, status, student_id, staff_id")
+      .single();
+
+    if (profileError || !profile) {
+      // If profile update fails, insert manually
+      const { data: newProfile } = await admin
+        .from("profiles")
+        .insert({
+          id: authData.user.id,
+          email: normalizedEmail,
+          name: displayName,
+          role,
+          school_id: schoolId,
+          student_id: studentId,
+          staff_id: staffId,
+          status: "active",
+        })
+        .select("id, email, name, role, school_id, phone, avatar, status, student_id, staff_id")
+        .single();
+
+      if (!newProfile) {
+        return NextResponse.json(
+          { error: "Account created but profile setup failed. Please contact admin." },
+          { status: 500 }
+        );
+      }
+
+      return NextResponse.json({
+        user: newProfile,
+        message: `Account created successfully! You are registered as ${role.replace("_", " ")}.`,
+      });
+    }
 
     return NextResponse.json({
       user: profile,

@@ -1,94 +1,77 @@
-import { db } from "./db";
-import { cookies, headers } from "next/headers";
-import type { Role, User } from "@/types";
+// Server-side auth helpers using Supabase
+import { supabaseAdmin } from "./supabase/admin";
+import type { User } from "@/types";
 
-// Demo password check (in production use bcrypt/argon2)
+// Convert snake_case to camelCase for a profile object
+function normalizeProfile(p: Record<string, unknown> | null): User | null {
+  if (!p) return null;
+  return {
+    id: p.id as string,
+    email: p.email as string,
+    name: p.name as string,
+    role: p.role as User["role"],
+    schoolId: (p.school_id as string) || null,
+    phone: (p.phone as string) || null,
+    avatar: (p.avatar as string) || null,
+    status: p.status as string,
+    studentId: (p.student_id as string) || null,
+    staffId: (p.staff_id as string) || null,
+  };
+}
+
+// Get current user from Supabase session OR x-user-id header (fallback)
+export async function getCurrentUser(): Promise<User | null> {
+  try {
+    let userId: string | null = null;
+
+    // 1. Try Supabase session first
+    try {
+      const { createSupabaseServerClient } = await import("./supabase/server");
+      const supabase = await createSupabaseServerClient();
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        userId = session.user.id;
+      }
+    } catch {
+      // Session check failed, continue to fallback
+    }
+
+    // 2. Fallback to x-user-id header (for iframe/preview compatibility)
+    if (!userId) {
+      const { headers } = await import("next/headers");
+      const headerStore = await headers();
+      userId = headerStore.get("x-user-id");
+    }
+
+    if (!userId) return null;
+
+    // Use admin client (bypasses RLS) to fetch profile
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("id, email, name, role, school_id, phone, avatar, status, student_id, staff_id")
+      .eq("id", userId)
+      .single();
+
+    return normalizeProfile(profile);
+  } catch (error) {
+    console.error("getCurrentUser error:", error);
+    return null;
+  }
+}
+
+// Verify password (Supabase Auth handles this — kept for backward compat)
 export function verifyPassword(input: string, stored: string): boolean {
-  // stored format: "demo:<plain>"
   if (stored.startsWith("demo:")) {
     return input === stored.slice(5);
   }
   return false;
 }
 
-// Server-side: get current user from cookie OR x-user-id header
-// (header fallback needed for iframe/preview environments where third-party cookies are blocked)
-export async function getCurrentUser(): Promise<User | null> {
-  try {
-    // 1. Try cookie first
-    const cookieStore = await cookies();
-    let userId = cookieStore.get("erp_user_id")?.value;
-
-    // 2. Fallback to x-user-id header (set by client from localStorage)
-    if (!userId) {
-      const headerStore = await headers();
-      userId = headerStore.get("x-user-id") || undefined;
-    }
-
-    if (!userId) return null;
-
-    const profile = await db.profile.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        schoolId: true,
-        phone: true,
-        avatar: true,
-        status: true,
-        studentId: true,
-        staffId: true,
-      },
-    });
-
-    if (!profile || profile.status !== "active") return null;
-
-    return profile as User;
-  } catch {
-    return null;
-  }
-}
-
-export async function setSessionCookie(userId: string) {
-  const cookieStore = await cookies();
-  cookieStore.set("erp_user_id", userId, {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: 60 * 60 * 24 * 7, // 7 days
-  });
+// Session cookie helpers (Supabase manages these automatically)
+export async function setSessionCookie(_userId: string) {
+  // No-op
 }
 
 export async function clearSessionCookie() {
-  const cookieStore = await cookies();
-  cookieStore.delete("erp_user_id");
+  // No-op
 }
-
-// Role-based module access control
-export const ROLE_MODULES: Record<Role, string[]> = {
-  super_admin: [
-    "dashboard", "schools", "students", "staff", "classes", "attendance",
-    "timetable", "exams", "homework", "fees", "library", "transport",
-    "hr", "notices", "certificates", "reports",
-  ],
-  school_admin: [
-    "dashboard", "students", "staff", "classes", "attendance", "timetable",
-    "exams", "homework", "fees", "library", "transport", "hr", "notices",
-    "certificates", "reports",
-  ],
-  teacher: [
-    "dashboard", "attendance", "timetable", "exams", "homework", "students", "notices",
-  ],
-  student: [
-    "dashboard", "attendance", "timetable", "exams", "homework", "fees", "notices",
-  ],
-  parent: [
-    "dashboard", "attendance", "fees", "homework", "notices", "transport",
-  ],
-  accountant: ["dashboard", "fees", "students", "reports"],
-  librarian: ["dashboard", "library"],
-  transport_manager: ["dashboard", "transport", "students"],
-  hr: ["dashboard", "staff", "hr"],
-};

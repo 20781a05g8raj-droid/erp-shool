@@ -34,6 +34,9 @@ export const useAuthStore = create<AuthState>((set) => ({
         headers: userId ? { "x-user-id": userId } : {},
       });
       const data = await res.json();
+      if (data.user) {
+        localStorage.setItem("erp_user_id", data.user.id);
+      }
       set({ user: data.user, loading: false });
     } catch {
       set({ user: null, loading: false });

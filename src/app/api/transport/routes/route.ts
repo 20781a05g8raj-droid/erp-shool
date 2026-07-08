@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // GET /api/transport/routes — list with vehicles + student count
@@ -9,24 +9,37 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const routes = await db.transportRoute.findMany({
-    where: { schoolId: user.schoolId },
-    orderBy: [{ createdAt: "desc" }],
-    include: {
-      vehicles: {
-        select: {
-          id: true,
-          busNumber: true,
-          driverName: true,
-          driverPhone: true,
-          capacity: true,
-        },
-      },
-      _count: { select: { studentTransport: true, vehicles: true } },
-    },
-  });
+  const { data: routesRaw, error } = await supabaseAdmin
+    .from("transport_routes")
+    .select("*, vehicles(*)")
+    .eq("school_id", user.schoolId)
+    .order("created_at", { ascending: false });
 
-  return NextResponse.json(routes);
+  if (error) {
+    return NextResponse.json({ error: "Failed to fetch routes" }, { status: 500 });
+  }
+
+  // Compute student count and vehicle count for each route
+  const routes = await Promise.all(
+    (routesRaw || []).map(async (r: Record<string, unknown>) => {
+      const routeId = r.id as string;
+      const { count: studentCount } = await supabaseAdmin
+        .from("student_transport")
+        .select("*", { count: "exact", head: true })
+        .eq("route_id", routeId);
+      const { count: vehicleCount } = await supabaseAdmin
+        .from("vehicles")
+        .select("*", { count: "exact", head: true })
+        .eq("route_id", routeId);
+      r._count = {
+        studentTransport: studentCount || 0,
+        vehicles: vehicleCount || 0,
+      };
+      return r;
+    })
+  );
+
+  return NextResponse.json(toCamelCase(routes as Record<string, unknown>[]));
 }
 
 // POST /api/transport/routes — create route
@@ -60,19 +73,38 @@ export async function POST(req: NextRequest) {
   const fare = typeof body.fare === "number" ? body.fare : Number(body.fare) || 0;
 
   try {
-    const route = await db.transportRoute.create({
-      data: {
+    const { data: route, error } = await supabaseAdmin
+      .from("transport_routes")
+      .insert({
         name: body.name.trim(),
         stops: stopsCsv,
         fare,
-        schoolId: user.schoolId,
-      },
-      include: {
-        vehicles: true,
-        _count: { select: { studentTransport: true, vehicles: true } },
-      },
-    });
-    return NextResponse.json(route, { status: 201 });
+        school_id: user.schoolId,
+      })
+      .select("*, vehicles(*)")
+      .single();
+
+    if (error || !route) {
+      return NextResponse.json(
+        { error: "Failed to create route" },
+        { status: 500 }
+      );
+    }
+
+    // Compute counts
+    const { count: studentCount } = await supabaseAdmin
+      .from("student_transport")
+      .select("*", { count: "exact", head: true })
+      .eq("route_id", route.id);
+    (route as Record<string, unknown>)._count = {
+      studentTransport: studentCount || 0,
+      vehicles: ((route as Record<string, unknown>).vehicles as unknown[])?.length || 0,
+    };
+
+    return NextResponse.json(
+      toCamelCase(route as Record<string, unknown>),
+      { status: 201 }
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create route";
     return NextResponse.json({ error: message }, { status: 500 });

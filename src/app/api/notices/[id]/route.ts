@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 import type { Role } from "@/types";
 
@@ -18,11 +18,14 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   }
 
   const { id } = await params;
-  const existing = await db.notice.findFirst({
-    where: { id, schoolId: user.schoolId },
-    select: { id: true },
-  });
-  if (!existing) {
+  const { data: existing, error: existError } = await supabaseAdmin
+    .from("notices")
+    .select("id")
+    .eq("id", id)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
+
+  if (existError || !existing) {
     return NextResponse.json({ error: "Notice not found" }, { status: 404 });
   }
 
@@ -44,18 +47,29 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   if (body.title !== undefined) data.title = body.title.trim();
   if (body.content !== undefined) data.content = body.content.trim();
   if (body.targetAudience !== undefined) {
-    data.targetAudience = audience;
-    data.targetClassId = audience === "class" ? body.targetClassId : null;
-    data.targetRole = audience === "role" ? body.targetRole || null : null;
+    data.target_audience = audience;
+    data.target_class_id = audience === "class" ? body.targetClassId : null;
+    data.target_role = audience === "role" ? body.targetRole || null : null;
   }
   if (body.date !== undefined) data.date = body.date;
 
   try {
-    const updated = await db.notice.update({
-      where: { id },
-      data,
-    });
-    return NextResponse.json(updated);
+    const { data: updatedRaw, error: updateError } = await supabaseAdmin
+      .from("notices")
+      .update(data)
+      .eq("id", id)
+      .select("*")
+      .single();
+
+    if (updateError || !updatedRaw) {
+      return NextResponse.json(
+        { error: updateError?.message || "Failed to update notice" },
+        { status: 500 }
+      );
+    }
+    return NextResponse.json(
+      toCamelCase(updatedRaw as Record<string, unknown>)
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to update notice";
     return NextResponse.json({ error: message }, { status: 500 });
@@ -75,16 +89,25 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams) {
   }
 
   const { id } = await params;
-  const existing = await db.notice.findFirst({
-    where: { id, schoolId: user.schoolId },
-    select: { id: true },
-  });
-  if (!existing) {
+  const { data: existing, error: existError } = await supabaseAdmin
+    .from("notices")
+    .select("id")
+    .eq("id", id)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
+
+  if (existError || !existing) {
     return NextResponse.json({ error: "Notice not found" }, { status: 404 });
   }
 
   try {
-    await db.notice.delete({ where: { id } });
+    const { error: deleteError } = await supabaseAdmin
+      .from("notices")
+      .delete()
+      .eq("id", id);
+    if (deleteError) {
+      return NextResponse.json({ error: deleteError.message }, { status: 500 });
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to delete notice";

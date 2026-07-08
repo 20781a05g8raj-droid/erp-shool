@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 type RouteParams = { params: Promise<{ id: string }> };
@@ -12,19 +12,36 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams) {
   }
 
   const { id } = await params;
-  const existing = await db.studentTransport.findFirst({
-    where: { id, route: { schoolId: user.schoolId } },
-    select: { id: true },
-  });
-  if (!existing) {
-    return NextResponse.json({ error: "Assignment not found" }, { status: 404 });
+  const { data: existing, error: existError } = await supabaseAdmin
+    .from("student_transport")
+    .select("id, transport_routes!inner(school_id)")
+    .eq("id", id)
+    .eq("transport_routes.school_id", user.schoolId)
+    .maybeSingle();
+
+  if (existError || !existing) {
+    return NextResponse.json(
+      { error: "Assignment not found" },
+      { status: 404 }
+    );
   }
 
   try {
-    await db.studentTransport.delete({ where: { id } });
+    const { error } = await supabaseAdmin
+      .from("student_transport")
+      .delete()
+      .eq("id", id);
+
+    if (error) {
+      return NextResponse.json(
+        { error: "Failed to remove assignment" },
+        { status: 500 }
+      );
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to remove assignment";
+    const message =
+      err instanceof Error ? err.message : "Failed to remove assignment";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

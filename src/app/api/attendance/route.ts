@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // GET /api/attendance — list attendance records
@@ -24,17 +24,14 @@ export async function GET(req: Request) {
     // Single-student mode: return all attendance records + computed stats
     if (studentId) {
       // Verify the student belongs to this school
-      const student = await db.student.findFirst({
-        where: { id: studentId, schoolId },
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          admissionNumber: true,
-          classId: true,
-          sectionId: true,
-        },
-      });
+      const { data: student } = await supabaseAdmin
+        .from("students")
+        .select(
+          "id, first_name, last_name, admission_number, class_id, section_id"
+        )
+        .eq("id", studentId)
+        .eq("school_id", schoolId)
+        .maybeSingle();
       if (!student) {
         return NextResponse.json(
           { error: "Student not found" },
@@ -42,21 +39,30 @@ export async function GET(req: Request) {
         );
       }
 
-      const records = await db.studentAttendance.findMany({
-        where: { studentId },
-        orderBy: { date: "asc" },
-        select: { id: true, date: true, status: true, markedBy: true },
-      });
+      const { data: records } = await supabaseAdmin
+        .from("student_attendance")
+        .select("id, date, status, marked_by")
+        .eq("student_id", studentId)
+        .order("date", { ascending: true });
 
-      const total = records.length;
+      const recs = (records || []) as Array<{
+        id: string;
+        date: string;
+        status: string;
+        marked_by: string | null;
+      }>;
+      const camelRecords = recs.map((r) =>
+        toCamelCase(r as unknown as Record<string, unknown>)
+      );
+
+      const total = recs.length;
       const counts = {
-        present: records.filter((r) => r.status === "present").length,
-        absent: records.filter((r) => r.status === "absent").length,
-        late: records.filter((r) => r.status === "late").length,
-        leave: records.filter((r) => r.status === "leave").length,
-        halfday: records.filter((r) => r.status === "halfday").length,
+        present: recs.filter((r) => r.status === "present").length,
+        absent: recs.filter((r) => r.status === "absent").length,
+        late: recs.filter((r) => r.status === "late").length,
+        leave: recs.filter((r) => r.status === "leave").length,
+        halfday: recs.filter((r) => r.status === "halfday").length,
       };
-      // Attendance percentage: present counts full, late/halfday count half
       const weighted =
         counts.present +
         counts.late * 0.5 +
@@ -66,8 +72,8 @@ export async function GET(req: Request) {
         total > 0 ? Math.round((weighted / total) * 1000) / 10 : 0;
 
       return NextResponse.json({
-        student,
-        records,
+        student: toCamelCase(student as unknown as Record<string, unknown>),
+        records: camelRecords,
         counts,
         total,
         percentage,
@@ -83,58 +89,79 @@ export async function GET(req: Request) {
     }
 
     // Verify the class belongs to this school
-    const cls = await db.class.findFirst({
-      where: { id: classId, schoolId },
-      select: { id: true, name: true },
-    });
+    const { data: cls } = await supabaseAdmin
+      .from("classes")
+      .select("id, name")
+      .eq("id", classId)
+      .eq("school_id", schoolId)
+      .maybeSingle();
     if (!cls) {
       return NextResponse.json({ error: "Class not found" }, { status: 404 });
     }
 
     // Fetch students in this class (+ optional section)
-    const students = await db.student.findMany({
-      where: {
-        schoolId,
-        classId,
-        status: "active",
-        ...(sectionId ? { sectionId } : {}),
-      },
-      orderBy: [{ rollNumber: "asc" }, { firstName: "asc" }],
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        admissionNumber: true,
-        rollNumber: true,
-      },
+    let studentQuery = supabaseAdmin
+      .from("students")
+      .select(
+        "id, first_name, last_name, admission_number, roll_number"
+      )
+      .eq("school_id", schoolId)
+      .eq("class_id", classId)
+      .eq("status", "active");
+    if (sectionId) {
+      studentQuery = studentQuery.eq("section_id", sectionId);
+    }
+    studentQuery = studentQuery.order("roll_number", {
+      ascending: true,
+      nullsFirst: false,
     });
+    studentQuery = studentQuery.order("first_name", { ascending: true });
 
+    const { data: studentsData, error: studentsErr } = await studentQuery;
+    if (studentsErr) {
+      throw studentsErr;
+    }
+
+    const students = (studentsData || []) as Array<{
+      id: string;
+      first_name: string;
+      last_name: string;
+      admission_number: string;
+      roll_number: string | null;
+    }>;
     const studentIds = students.map((s) => s.id);
 
     // Fetch existing attendance records for that date
-    const attendance =
-      studentIds.length > 0
-        ? await db.studentAttendance.findMany({
-            where: { studentId: { in: studentIds }, date },
-            select: {
-              id: true,
-              studentId: true,
-              status: true,
-              markedBy: true,
-            },
-          })
-        : [];
+    let attendance: Array<{
+      id: string;
+      student_id: string;
+      status: string;
+      marked_by: string | null;
+    }> = [];
+    if (studentIds.length > 0) {
+      const { data: attendanceData } = await supabaseAdmin
+        .from("student_attendance")
+        .select("id, student_id, status, marked_by")
+        .eq("date", date)
+        .in("student_id", studentIds);
+      attendance = (attendanceData || []) as typeof attendance;
+    }
 
-    const attendanceMap = new Map(attendance.map((a) => [a.studentId, a]));
+    const attendanceMap = new Map(attendance.map((a) => [a.student_id, a]));
 
-    const rows = students.map((s) => ({
-      ...s,
-      attendance: attendanceMap.get(s.id) || null,
-    }));
+    const rows = students.map((s) => {
+      const att = attendanceMap.get(s.id) || null;
+      return {
+        ...toCamelCase(s as unknown as Record<string, unknown>),
+        attendance: att
+          ? toCamelCase(att as unknown as Record<string, unknown>)
+          : null,
+      };
+    });
 
     return NextResponse.json({
       date,
-      classInfo: cls,
+      classInfo: toCamelCase(cls as unknown as Record<string, unknown>),
       students: rows,
       marked: attendance.length,
     });
@@ -149,6 +176,8 @@ export async function GET(req: Request) {
 
 // POST /api/attendance — bulk-mark attendance for a class on a date
 // Body: { classId, sectionId?, date, records: [{ studentId, status }] }
+// Strategy: delete existing records for the submitted students on the date,
+// then insert the new ones. (Equivalent to upsert per (student_id, date).)
 export async function POST(req: Request) {
   const user = await getCurrentUser();
   if (!user || !user.schoolId) {
@@ -177,10 +206,12 @@ export async function POST(req: Request) {
     }
 
     // Verify class belongs to school
-    const cls = await db.class.findFirst({
-      where: { id: classId, schoolId },
-      select: { id: true },
-    });
+    const { data: cls } = await supabaseAdmin
+      .from("classes")
+      .select("id")
+      .eq("id", classId)
+      .eq("school_id", schoolId)
+      .maybeSingle();
     if (!cls) {
       return NextResponse.json({ error: "Class not found" }, { status: 404 });
     }
@@ -188,16 +219,19 @@ export async function POST(req: Request) {
     const validStatuses = ["present", "absent", "late", "leave", "halfday"];
 
     // Get all valid student IDs in this class+section for this school
-    const validStudents = await db.student.findMany({
-      where: {
-        schoolId,
-        classId,
-        status: "active",
-        ...(sectionId ? { sectionId } : {}),
-      },
-      select: { id: true },
-    });
-    const validStudentIds = new Set(validStudents.map((s) => s.id));
+    let validStudentQuery = supabaseAdmin
+      .from("students")
+      .select("id")
+      .eq("school_id", schoolId)
+      .eq("class_id", classId)
+      .eq("status", "active");
+    if (sectionId) {
+      validStudentQuery = validStudentQuery.eq("section_id", sectionId);
+    }
+    const { data: validStudentsData } = await validStudentQuery;
+    const validStudentIds = new Set(
+      ((validStudentsData || []) as Array<{ id: string }>).map((s) => s.id)
+    );
 
     // Filter and normalize records
     const cleanRecords = records
@@ -224,36 +258,31 @@ export async function POST(req: Request) {
       );
     }
 
-    // Fetch existing attendance for these students on this date
-    const existing = await db.studentAttendance.findMany({
-      where: {
-        date,
-        studentId: { in: cleanRecords.map((r) => r.studentId) },
-      },
-      select: { id: true, studentId: true },
-    });
-    const existingMap = new Map(existing.map((e) => [e.studentId, e.id]));
+    const cleanStudentIds = cleanRecords.map((r) => r.studentId);
 
-    // Upsert: update if exists, create if not
-    const operations = cleanRecords.map((r) => {
-      const existingId = existingMap.get(r.studentId);
-      if (existingId) {
-        return db.studentAttendance.update({
-          where: { id: existingId },
-          data: { status: r.status, markedBy: user.id },
-        });
-      }
-      return db.studentAttendance.create({
-        data: {
-          studentId: r.studentId,
-          date,
-          status: r.status,
-          markedBy: user.id,
-        },
-      });
-    });
+    // Delete existing attendance for these students on this date
+    const { error: deleteErr } = await supabaseAdmin
+      .from("student_attendance")
+      .delete()
+      .eq("date", date)
+      .in("student_id", cleanStudentIds);
+    if (deleteErr) {
+      throw deleteErr;
+    }
 
-    await db.$transaction(operations);
+    // Insert new records
+    const insertRows = cleanRecords.map((r) => ({
+      student_id: r.studentId,
+      date,
+      status: r.status,
+      marked_by: user.id,
+    }));
+    const { error: insertErr } = await supabaseAdmin
+      .from("student_attendance")
+      .insert(insertRows);
+    if (insertErr) {
+      throw insertErr;
+    }
 
     return NextResponse.json({
       success: true,

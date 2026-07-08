@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
+
+const HOMEWORK_SELECT =
+  "*, class:classes(id, name), section:sections(id, name), subject:subjects(id, name, code), staff:staff(id, first_name, last_name, employee_id)";
 
 // GET /api/homework — list homework.
 //   ?classId=            -> all homework for that class
@@ -19,71 +22,81 @@ export async function GET(req: NextRequest) {
   const staffId = searchParams.get("staffId");
 
   let effectiveClassId = classId;
-  let studentScope: { id: string; classId?: string | null } | null = null;
   if (studentId) {
-    studentScope = await db.student.findFirst({
-      where: { id: studentId, schoolId: user.schoolId },
-      select: { id: true, classId: true },
-    });
+    const { data: studentScope } = await supabaseAdmin
+      .from("students")
+      .select("id, class_id")
+      .eq("id", studentId)
+      .eq("school_id", user.schoolId)
+      .maybeSingle();
+
     if (!studentScope) {
       return NextResponse.json({ homework: [] });
     }
-    effectiveClassId = studentScope.classId ?? null;
+    effectiveClassId =
+      (studentScope as { id: string; class_id: string | null }).class_id ?? null;
   }
 
   // Role-based scoping: students/parents only see homework for their own class.
-  let scopeClassId: string | undefined = effectiveClassId ?? undefined;
+  let scopeClassId: string | undefined | null = effectiveClassId ?? undefined;
   if (user.role === "student" || user.role === "parent") {
-    const me = await db.student.findFirst({
-      where: {
-        id: user.studentId ?? undefined,
-        schoolId: user.schoolId,
-      },
-      select: { id: true, classId: true },
-    });
-    if (me) scopeClassId = me.classId ?? undefined;
-    else scopeClassId = "__none__"; // no student record -> no homework
+    if (user.studentId) {
+      const { data: me } = await supabaseAdmin
+        .from("students")
+        .select("id, class_id")
+        .eq("id", user.studentId)
+        .eq("school_id", user.schoolId)
+        .maybeSingle();
+      if (me) {
+        scopeClassId = (me as { class_id: string | null }).class_id ?? undefined;
+      } else {
+        scopeClassId = "__none__"; // no student record -> no homework
+      }
+    } else {
+      scopeClassId = "__none__";
+    }
   }
 
-  const homework = await db.homework.findMany({
-    where: {
-      schoolId: user.schoolId,
-      ...(scopeClassId ? { classId: scopeClassId } : {}),
-      ...(staffId ? { staffId } : {}),
-    },
-    include: {
-      class: { select: { id: true, name: true } },
-      section: { select: { id: true, name: true } },
-      subject: { select: { id: true, name: true, code: true } },
-      staff: {
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          employeeId: true,
-        },
-      },
-    },
-    orderBy: { dueDate: "desc" },
-  });
+  let query = supabaseAdmin
+    .from("homework")
+    .select(HOMEWORK_SELECT)
+    .eq("school_id", user.schoolId);
 
+  if (scopeClassId) {
+    query = query.eq("class_id", scopeClassId);
+  }
+  if (staffId) {
+    query = query.eq("staff_id", staffId);
+  }
+
+  query = query.order("due_date", { ascending: false });
+
+  const { data: homeworkRaw, error } = await query;
+  if (error) {
+    return NextResponse.json({ error: "Failed to fetch homework" }, { status: 500 });
+  }
+
+  const homework = (homeworkRaw || []) as Array<Record<string, unknown>>;
   return NextResponse.json({
-    homework: homework.map((h) => ({
-      id: h.id,
-      title: h.title,
-      description: h.description,
-      dueDate: h.dueDate,
-      attachment: h.attachment,
-      classId: h.classId,
-      sectionId: h.sectionId,
-      subjectId: h.subjectId,
-      staffId: h.staffId,
-      createdAt: h.createdAt,
-      class: h.class,
-      section: h.section,
-      subject: h.subject,
-      staff: h.staff,
-    })),
+    homework: homework.map((h) => {
+      const camel = toCamelCase(h) as Record<string, unknown>;
+      return {
+        id: camel.id,
+        title: camel.title,
+        description: camel.description,
+        dueDate: camel.dueDate,
+        attachment: camel.attachment,
+        classId: camel.classId,
+        sectionId: camel.sectionId,
+        subjectId: camel.subjectId,
+        staffId: camel.staffId,
+        createdAt: camel.createdAt,
+        class: camel.class,
+        section: camel.section,
+        subject: camel.subject,
+        staff: camel.staff,
+      };
+    }),
   });
 }
 
@@ -126,18 +139,25 @@ export async function POST(req: NextRequest) {
   }
 
   // Validate class belongs to school.
-  const cls = await db.class.findFirst({
-    where: { id: classId, schoolId: user.schoolId },
-  });
-  if (!cls) {
+  const { data: cls, error: clsError } = await supabaseAdmin
+    .from("classes")
+    .select("id")
+    .eq("id", classId)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
+
+  if (clsError || !cls) {
     return NextResponse.json({ error: "Class not found" }, { status: 404 });
   }
 
   // Validate section (if provided) belongs to the class.
   if (body.sectionId) {
-    const sec = await db.section.findFirst({
-      where: { id: body.sectionId, classId },
-    });
+    const { data: sec } = await supabaseAdmin
+      .from("sections")
+      .select("id")
+      .eq("id", body.sectionId)
+      .eq("class_id", classId)
+      .maybeSingle();
     if (!sec) {
       return NextResponse.json({ error: "Section not found" }, { status: 404 });
     }
@@ -148,32 +168,33 @@ export async function POST(req: NextRequest) {
     body.staffId ||
     (user.role === "teacher" && user.staffId ? user.staffId : null);
 
-  const hw = await db.homework.create({
-    data: {
-      title,
-      description: body.description?.toString() ?? null,
-      classId,
-      sectionId: body.sectionId || null,
-      subjectId: body.subjectId || null,
-      staffId: staffId || null,
-      dueDate,
-      attachment: body.attachment || null,
-      schoolId: user.schoolId,
-    },
-    include: {
-      class: { select: { id: true, name: true } },
-      section: { select: { id: true, name: true } },
-      subject: { select: { id: true, name: true, code: true } },
-      staff: {
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          employeeId: true,
-        },
-      },
-    },
-  });
+  const insertRow = {
+    title,
+    description: body.description?.toString() ?? null,
+    class_id: classId,
+    section_id: body.sectionId || null,
+    subject_id: body.subjectId || null,
+    staff_id: staffId || null,
+    due_date: dueDate,
+    attachment: body.attachment || null,
+    school_id: user.schoolId,
+  };
 
-  return NextResponse.json({ homework: hw }, { status: 201 });
+  const { data: hwRaw, error: insertError } = await supabaseAdmin
+    .from("homework")
+    .insert(insertRow)
+    .select(HOMEWORK_SELECT)
+    .single();
+
+  if (insertError || !hwRaw) {
+    return NextResponse.json(
+      { error: insertError?.message || "Failed to create homework" },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json(
+    { homework: toCamelCase(hwRaw as Record<string, unknown>) },
+    { status: 201 }
+  );
 }

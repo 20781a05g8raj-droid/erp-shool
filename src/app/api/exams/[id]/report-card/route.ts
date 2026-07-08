@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 import { gradeForPercentage } from "../results/route";
 
@@ -34,51 +34,68 @@ export async function GET(
     }
   }
 
-  const exam = await db.exam.findFirst({
-    where: { id, schoolId: user.schoolId },
-    include: {
-      class: { select: { id: true, name: true } },
-      school: { select: { id: true, name: true, address: true, phone: true, email: true, logo: true } },
-    },
-  });
-  if (!exam) {
+  const { data: examRaw, error: examError } = await supabaseAdmin
+    .from("exams")
+    .select(
+      "*, class:classes(id, name), school:schools(id, name, address, phone, email, logo)"
+    )
+    .eq("id", id)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
+
+  if (examError || !examRaw) {
     return NextResponse.json({ error: "Exam not found" }, { status: 404 });
   }
 
-  const student = await db.student.findFirst({
-    where: { id: studentId, schoolId: user.schoolId },
-    include: {
-      class: { select: { id: true, name: true } },
-      section: { select: { id: true, name: true } },
-    },
-  });
-  if (!student) {
+  const exam = examRaw as Record<string, unknown>;
+
+  const { data: studentRaw, error: studentError } = await supabaseAdmin
+    .from("students")
+    .select(
+      "*, class:classes(id, name), section:sections(id, name)"
+    )
+    .eq("id", studentId)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
+
+  if (studentError || !studentRaw) {
     return NextResponse.json({ error: "Student not found" }, { status: 404 });
   }
 
+  const student = studentRaw as Record<string, unknown>;
+
   // This student's results
-  const myResults = await db.examResult.findMany({
-    where: { examId: id, studentId },
-    include: { subject: { select: { id: true, name: true, code: true } } },
-    orderBy: { subject: { name: "asc" } },
+  const { data: myResultsRaw } = await supabaseAdmin
+    .from("exam_results")
+    .select("*, subject:subjects(id, name, code)")
+    .eq("exam_id", id)
+    .eq("student_id", studentId);
+
+  const myResultsArr = (myResultsRaw || []) as Array<Record<string, unknown>>;
+  myResultsArr.sort((a, b) => {
+    const sa = ((a.subject as Record<string, unknown>)?.name as string) || "";
+    const sb = ((b.subject as Record<string, unknown>)?.name as string) || "";
+    return sa.localeCompare(sb);
   });
 
   // All results in this exam (for rank computation)
-  const allResults = await db.examResult.findMany({
-    where: { examId: id },
-    select: {
-      studentId: true,
-      marksObtained: true,
-      maxMarks: true,
-    },
-  });
+  const { data: allResultsRaw } = await supabaseAdmin
+    .from("exam_results")
+    .select("student_id, marks_obtained, max_marks")
+    .eq("exam_id", id);
+
+  const allResults = (allResultsRaw || []) as Array<{
+    student_id: string;
+    marks_obtained: number;
+    max_marks: number;
+  }>;
 
   // Compute total per student
   const totalsMap = new Map<string, number>();
   const maxTotalMap = new Map<string, number>();
   for (const r of allResults) {
-    totalsMap.set(r.studentId, (totalsMap.get(r.studentId) || 0) + r.marksObtained);
-    maxTotalMap.set(r.studentId, (maxTotalMap.get(r.studentId) || 0) + r.maxMarks);
+    totalsMap.set(r.student_id, (totalsMap.get(r.student_id) || 0) + Number(r.marks_obtained));
+    maxTotalMap.set(r.student_id, (maxTotalMap.get(r.student_id) || 0) + Number(r.max_marks));
   }
 
   // Sort students by total descending, compute rank with ties
@@ -110,44 +127,59 @@ export async function GET(
   const totalStudents = ranked.length;
 
   // Pass/Fail: fail if any ENTERED subject is below 33%
-  // (subjects with no marks entered are treated as "not graded" — excluded from pass/fail)
-  const hasFailed = myResults.some(
-    (r) => r.maxMarks > 0 && (r.marksObtained / r.maxMarks) * 100 < 33
-  );
-  const result = myResults.length === 0 ? "—" : hasFailed ? "FAIL" : "PASS";
+  const hasFailed = myResultsArr.some((r) => {
+    const max = Number(r.max_marks);
+    const marks = Number(r.marks_obtained);
+    return max > 0 && (marks / max) * 100 < 33;
+  });
+  const result = myResultsArr.length === 0 ? "—" : hasFailed ? "FAIL" : "PASS";
 
   // Subjects for this exam (use class_subjects as canonical list)
-  const classSubjects = await db.classSubject.findMany({
-    where: { classId: exam.classId },
-    include: { subject: { select: { id: true, name: true, code: true } } },
-    orderBy: { subject: { name: "asc" } },
+  const { data: classSubjectsRaw } = await supabaseAdmin
+    .from("class_subjects")
+    .select("*, subject:subjects(id, name, code)")
+    .eq("class_id", exam.class_id as string);
+
+  const classSubjects = (classSubjectsRaw || []) as Array<Record<string, unknown>>;
+  classSubjects.sort((a, b) => {
+    const sa = ((a.subject as Record<string, unknown>)?.name as string) || "";
+    const sb = ((b.subject as Record<string, unknown>)?.name as string) || "";
+    return sa.localeCompare(sb);
   });
+
+  const examMaxMarks = Number(exam.max_marks);
 
   // Build subject-wise results — null marksObtained for unmarked subjects
   const subjectMarks = classSubjects.map((cs) => {
-    const r = myResults.find((x) => x.subjectId === cs.subject.id);
+    const subject = cs.subject as Record<string, unknown>;
+    const subjectId = subject.id as string;
+    const r = myResultsArr.find(
+      (x) => (x.subject_id as string) === subjectId
+    );
     if (!r) {
       return {
-        subjectId: cs.subject.id,
-        subjectName: cs.subject.name,
-        subjectCode: cs.subject.code,
+        subjectId,
+        subjectName: subject.name,
+        subjectCode: subject.code,
         marksObtained: null as number | null,
-        maxMarks: exam.maxMarks,
+        maxMarks: examMaxMarks,
         percentage: 0,
         grade: "—",
         remarks: "Not Graded",
       };
     }
-    const pct = r.maxMarks > 0 ? (r.marksObtained / r.maxMarks) * 100 : 0;
+    const max = Number(r.max_marks);
+    const marks = Number(r.marks_obtained);
+    const pct = max > 0 ? (marks / max) * 100 : 0;
     return {
-      subjectId: cs.subject.id,
-      subjectName: cs.subject.name,
-      subjectCode: cs.subject.code,
-      marksObtained: r.marksObtained,
-      maxMarks: r.maxMarks,
+      subjectId,
+      subjectName: subject.name,
+      subjectCode: subject.code,
+      marksObtained: marks,
+      maxMarks: max,
       percentage: Math.round(pct * 100) / 100,
-      grade: r.grade || gradeForPercentage(pct),
-      remarks: r.remarks || (pct < 33 ? "Needs Improvement" : null),
+      grade: (r.grade as string) || gradeForPercentage(pct),
+      remarks: (r.remarks as string | null) || (pct < 33 ? "Needs Improvement" : null),
     };
   });
 
@@ -155,17 +187,20 @@ export async function GET(
   const finalSubjectMarks =
     subjectMarks.length > 0
       ? subjectMarks
-      : myResults.map((r) => {
-          const pct = r.maxMarks > 0 ? (r.marksObtained / r.maxMarks) * 100 : 0;
+      : myResultsArr.map((r) => {
+          const subject = r.subject as Record<string, unknown>;
+          const max = Number(r.max_marks);
+          const marks = Number(r.marks_obtained);
+          const pct = max > 0 ? (marks / max) * 100 : 0;
           return {
-            subjectId: r.subject.id,
-            subjectName: r.subject.name,
-            subjectCode: r.subject.code,
-            marksObtained: r.marksObtained as number | null,
-            maxMarks: r.maxMarks,
+            subjectId: subject.id,
+            subjectName: subject.name,
+            subjectCode: subject.code,
+            marksObtained: marks as number | null,
+            maxMarks: max,
             percentage: Math.round(pct * 100) / 100,
-            grade: r.grade || gradeForPercentage(pct),
-            remarks: r.remarks,
+            grade: (r.grade as string) || gradeForPercentage(pct),
+            remarks: r.remarks as string | null,
           };
         });
 
@@ -174,24 +209,24 @@ export async function GET(
       id: exam.id,
       name: exam.name,
       type: exam.type,
-      startDate: exam.startDate,
-      endDate: exam.endDate,
-      maxMarks: exam.maxMarks,
-      class: exam.class,
+      startDate: exam.start_date,
+      endDate: exam.end_date,
+      maxMarks: exam.max_marks,
+      class: toCamelCase(exam.class as Record<string, unknown>),
     },
-    school: exam.school,
+    school: toCamelCase(exam.school as Record<string, unknown>),
     student: {
       id: student.id,
-      firstName: student.firstName,
-      lastName: student.lastName,
-      admissionNumber: student.admissionNumber,
-      rollNumber: student.rollNumber,
+      firstName: student.first_name,
+      lastName: student.last_name,
+      admissionNumber: student.admission_number,
+      rollNumber: student.roll_number,
       dob: student.dob,
       gender: student.gender,
-      fatherName: student.fatherName,
-      motherName: student.motherName,
-      class: student.class,
-      section: student.section,
+      fatherName: student.father_name,
+      motherName: student.mother_name,
+      class: toCamelCase(student.class as Record<string, unknown>),
+      section: toCamelCase(student.section as Record<string, unknown>),
     },
     subjects: finalSubjectMarks,
     total: myTotal,

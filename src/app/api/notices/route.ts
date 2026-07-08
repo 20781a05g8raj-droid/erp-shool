@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 import type { Role } from "@/types";
 
@@ -18,43 +18,53 @@ export async function GET(req: NextRequest) {
   // Determine the user's classId (for students/parents we look up the student record)
   let userClassId: string | null = null;
   if ((user.role === "student" || user.role === "parent") && user.studentId) {
-    const student = await db.student.findUnique({
-      where: { id: user.studentId },
-      select: { classId: true },
-    });
-    userClassId = student?.classId ?? null;
+    const { data: student } = await supabaseAdmin
+      .from("students")
+      .select("class_id")
+      .eq("id", user.studentId)
+      .maybeSingle();
+    userClassId =
+      (student as { class_id: string | null } | null)?.class_id ?? null;
   }
 
-  const where: {
-    schoolId: string;
-    targetAudience?: string;
-    AND?: { OR: { targetAudience: string; targetClassId?: string | null; targetRole?: string | null }[] }[];
-  } = { schoolId };
+  let query = supabaseAdmin
+    .from("notices")
+    .select("*")
+    .eq("school_id", schoolId);
 
   if (audienceFilter) {
-    where.targetAudience = audienceFilter;
+    query = query.eq("target_audience", audienceFilter);
   }
 
   // Role-based audience scoping: non-admins only see notices targeting them.
-  // Admin-level roles (super_admin, school_admin) see all notices in the school.
   const adminRoles: Role[] = ["super_admin", "school_admin"];
   if (!adminRoles.includes(user.role)) {
-    const orClauses: { targetAudience: string; targetClassId?: string | null; targetRole?: string | null }[] = [
-      { targetAudience: "all" },
-    ];
+    // Build OR filter: target_audience = 'all' OR
+    // (target_audience = 'class' AND target_class_id = userClassId) OR
+    // (target_audience = 'role' AND target_role = user.role)
+    const orParts = [`target_audience.eq.all`];
     if (userClassId) {
-      orClauses.push({ targetAudience: "class", targetClassId: userClassId });
+      orParts.push(
+        `and(target_audience.eq.class,target_class_id.eq.${userClassId})`
+      );
     }
-    orClauses.push({ targetAudience: "role", targetRole: user.role });
-    where.AND = [{ OR: orClauses }];
+    orParts.push(`and(target_audience.eq.role,target_role.eq.${user.role})`);
+    query = query.or(orParts.join(","));
   }
 
-  const notices = await db.notice.findMany({
-    where,
-    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-  });
+  query = query
+    .order("date", { ascending: false })
+    .order("created_at", { ascending: false });
 
-  return NextResponse.json({ notices });
+  const { data: noticesRaw, error } = await query;
+  if (error) {
+    return NextResponse.json({ error: "Failed to fetch notices" }, { status: 500 });
+  }
+
+  const notices = (noticesRaw || []) as Array<Record<string, unknown>>;
+  return NextResponse.json({
+    notices: notices.map((n) => toCamelCase(n)),
+  });
 }
 
 // POST /api/notices — create a new notice
@@ -88,13 +98,18 @@ export async function POST(req: NextRequest) {
   // Validate targetClassId belongs to school when audience=class
   if (audience === "class") {
     if (!body.targetClassId) {
-      return NextResponse.json({ error: "Class is required for class-targeted notice" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Class is required for class-targeted notice" },
+        { status: 400 }
+      );
     }
-    const cls = await db.class.findFirst({
-      where: { id: body.targetClassId, schoolId: user.schoolId },
-      select: { id: true },
-    });
-    if (!cls) {
+    const { data: cls, error: clsError } = await supabaseAdmin
+      .from("classes")
+      .select("id")
+      .eq("id", body.targetClassId)
+      .eq("school_id", user.schoolId)
+      .maybeSingle();
+    if (clsError || !cls) {
       return NextResponse.json({ error: "Invalid class" }, { status: 400 });
     }
   }
@@ -102,19 +117,33 @@ export async function POST(req: NextRequest) {
   const date = body.date || new Date().toISOString().split("T")[0];
 
   try {
-    const notice = await db.notice.create({
-      data: {
-        title: body.title.trim(),
-        content: body.content.trim(),
-        targetAudience: audience,
-        targetClassId: audience === "class" ? body.targetClassId : null,
-        targetRole: audience === "role" ? body.targetRole || null : null,
-        postedBy: user.name,
-        date,
-        schoolId: user.schoolId,
-      },
-    });
-    return NextResponse.json(notice, { status: 201 });
+    const insertRow = {
+      title: body.title.trim(),
+      content: body.content.trim(),
+      target_audience: audience,
+      target_class_id: audience === "class" ? body.targetClassId : null,
+      target_role: audience === "role" ? body.targetRole || null : null,
+      posted_by: user.name,
+      date,
+      school_id: user.schoolId,
+    };
+
+    const { data: noticeRaw, error: insertError } = await supabaseAdmin
+      .from("notices")
+      .insert(insertRow)
+      .select("*")
+      .single();
+
+    if (insertError || !noticeRaw) {
+      return NextResponse.json(
+        { error: insertError?.message || "Failed to create notice" },
+        { status: 500 }
+      );
+    }
+    return NextResponse.json(
+      toCamelCase(noticeRaw as Record<string, unknown>),
+      { status: 201 }
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create notice";
     return NextResponse.json({ error: message }, { status: 500 });

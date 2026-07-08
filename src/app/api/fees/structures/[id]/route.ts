@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // PUT — update fee structure (and replace items)
@@ -23,10 +23,14 @@ export async function PUT(
       items?: { name?: string; amount?: number }[];
     };
 
-    const existing = await db.feeStructure.findFirst({
-      where: { id, schoolId: user.schoolId },
-    });
-    if (!existing) {
+    const { data: existing, error: existError } = await supabaseAdmin
+      .from("fee_structures")
+      .select("*")
+      .eq("id", id)
+      .eq("school_id", user.schoolId)
+      .maybeSingle();
+
+    if (existError || !existing) {
       return NextResponse.json(
         { error: "Fee structure not found" },
         { status: 404 }
@@ -42,25 +46,48 @@ export async function PUT(
     const totalAmount = cleanItems.reduce((sum, it) => sum + it.amount, 0);
 
     // Replace items: delete then recreate
-    await db.feeItem.deleteMany({ where: { feeStructureId: id } });
+    await supabaseAdmin.from("fee_items").delete().eq("fee_structure_id", id);
 
-    const structure = await db.feeStructure.update({
-      where: { id },
-      data: {
-        name: name ?? existing.name,
-        classId: classId === undefined ? existing.classId : classId || null,
-        term: term ?? existing.term,
-        dueDate: dueDate === undefined ? existing.dueDate : dueDate || null,
-        totalAmount: cleanItems.length > 0 ? totalAmount : existing.totalAmount,
-        items:
-          cleanItems.length > 0
-            ? { create: cleanItems }
-            : undefined,
-      },
-      include: { items: true, class: true },
+    const updateData: Record<string, unknown> = {
+      name: name ?? existing.name,
+      class_id: classId === undefined ? existing.class_id : classId || null,
+      term: term ?? existing.term,
+      due_date: dueDate === undefined ? existing.due_date : dueDate || null,
+      total_amount:
+        cleanItems.length > 0 ? totalAmount : existing.total_amount,
+    };
+
+    const { data: structure, error: updateError } = await supabaseAdmin
+      .from("fee_structures")
+      .update(updateData)
+      .eq("id", id)
+      .select("*, classes(*), fee_items(*)")
+      .single();
+
+    if (updateError || !structure) {
+      return NextResponse.json(
+        { error: "Failed to update fee structure" },
+        { status: 500 }
+      );
+    }
+
+    // Insert new items
+    if (cleanItems.length > 0) {
+      const itemRows = cleanItems.map((it) => ({
+        fee_structure_id: id,
+        name: it.name,
+        amount: it.amount,
+      }));
+      const { data: insertedItems } = await supabaseAdmin
+        .from("fee_items")
+        .insert(itemRows)
+        .select("*");
+      structure.fee_items = insertedItems || [];
+    }
+
+    return NextResponse.json({
+      structure: toCamelCase(structure as Record<string, unknown>),
     });
-
-    return NextResponse.json({ structure });
   } catch {
     return NextResponse.json(
       { error: "Failed to update fee structure" },
@@ -81,18 +108,26 @@ export async function DELETE(
 
   try {
     const { id } = await params;
-    const existing = await db.feeStructure.findFirst({
-      where: { id, schoolId: user.schoolId },
-      include: { _count: { select: { studentFees: true } } },
-    });
-    if (!existing) {
+    const { data: existing, error: existError } = await supabaseAdmin
+      .from("fee_structures")
+      .select("id")
+      .eq("id", id)
+      .eq("school_id", user.schoolId)
+      .maybeSingle();
+
+    if (existError || !existing) {
       return NextResponse.json(
         { error: "Fee structure not found" },
         { status: 404 }
       );
     }
 
-    if (existing._count.studentFees > 0) {
+    const { count } = await supabaseAdmin
+      .from("student_fees")
+      .select("*", { count: "exact", head: true })
+      .eq("fee_structure_id", id);
+
+    if ((count || 0) > 0) {
       return NextResponse.json(
         {
           error:
@@ -102,7 +137,17 @@ export async function DELETE(
       );
     }
 
-    await db.feeStructure.delete({ where: { id } });
+    const { error: deleteError } = await supabaseAdmin
+      .from("fee_structures")
+      .delete()
+      .eq("id", id);
+
+    if (deleteError) {
+      return NextResponse.json(
+        { error: "Failed to delete fee structure" },
+        { status: 500 }
+      );
+    }
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json(

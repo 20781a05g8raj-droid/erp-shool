@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 import { canMarkStaffAttendance } from "@/lib/permissions";
 
@@ -21,42 +21,58 @@ export async function GET(req: Request) {
     ).padStart(2, "0")}`;
 
   try {
-    const staff = await db.staff.findMany({
-      where: { schoolId: user.schoolId, status: "active" },
-      orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
-      select: {
-        id: true,
-        employeeId: true,
-        firstName: true,
-        lastName: true,
-        designation: true,
-        department: true,
-        type: true,
-        photo: true,
-      },
-    });
+    const { data: staffData, error: staffErr } = await supabaseAdmin
+      .from("staff")
+      .select(
+        "id, employee_id, first_name, last_name, designation, department, type, photo"
+      )
+      .eq("school_id", user.schoolId)
+      .eq("status", "active")
+      .order("first_name", { ascending: true })
+      .order("last_name", { ascending: true });
+    if (staffErr) {
+      throw staffErr;
+    }
 
+    const staff = (staffData || []) as Array<{
+      id: string;
+      employee_id: string;
+      first_name: string;
+      last_name: string;
+      designation: string | null;
+      department: string | null;
+      type: string | null;
+      photo: string | null;
+    }>;
     const staffIds = staff.map((s) => s.id);
-    const attendance =
-      staffIds.length > 0
-        ? await db.staffAttendance.findMany({
-            where: { staffId: { in: staffIds }, date },
-            select: {
-              id: true,
-              staffId: true,
-              status: true,
-              checkIn: true,
-              checkOut: true,
-            },
-          })
-        : [];
 
-    const attendanceMap = new Map(attendance.map((a) => [a.staffId, a]));
+    let attendance: Array<{
+      id: string;
+      staff_id: string;
+      status: string;
+      check_in: string | null;
+      check_out: string | null;
+    }> = [];
+    if (staffIds.length > 0) {
+      const { data: attendanceData } = await supabaseAdmin
+        .from("staff_attendance")
+        .select("id, staff_id, status, check_in, check_out")
+        .eq("date", date)
+        .in("staff_id", staffIds);
+      attendance = (attendanceData || []) as typeof attendance;
+    }
 
-    const rows = staff.map((s) => ({
-      ...s,
-      attendance: attendanceMap.get(s.id) || null,
-    }));
+    const attendanceMap = new Map(attendance.map((a) => [a.staff_id, a]));
+
+    const rows = staff.map((s) => {
+      const att = attendanceMap.get(s.id) || null;
+      return {
+        ...toCamelCase(s as unknown as Record<string, unknown>),
+        attendance: att
+          ? toCamelCase(att as unknown as Record<string, unknown>)
+          : null,
+      };
+    });
 
     const presentCount = attendance.filter(
       (a) => a.status === "present"
@@ -81,7 +97,8 @@ export async function GET(req: Request) {
 
 // POST /api/attendance/staff
 // Body: { date, records: [{ staffId, status, checkIn?, checkOut? }] }
-// Upserts each record.
+// Strategy: delete existing records for the submitted staff on the date,
+// then insert the new ones. (Equivalent to upsert per (staff_id, date).)
 export async function POST(req: Request) {
   const user = await getCurrentUser();
   if (!user || !user.schoolId) {
@@ -89,7 +106,10 @@ export async function POST(req: Request) {
   }
   // Only HR, school_admin, super_admin can mark staff attendance (NOT teachers)
   if (!canMarkStaffAttendance(user.role)) {
-    return NextResponse.json({ error: "You don't have permission to mark staff attendance" }, { status: 403 });
+    return NextResponse.json(
+      { error: "You don't have permission to mark staff attendance" },
+      { status: 403 }
+    );
   }
 
   try {
@@ -112,11 +132,14 @@ export async function POST(req: Request) {
 
     const validStatuses = ["present", "absent", "late", "leave", "halfday"];
 
-    const validStaff = await db.staff.findMany({
-      where: { schoolId: user.schoolId, status: "active" },
-      select: { id: true },
-    });
-    const validStaffIds = new Set(validStaff.map((s) => s.id));
+    const { data: validStaffData } = await supabaseAdmin
+      .from("staff")
+      .select("id")
+      .eq("school_id", user.schoolId)
+      .eq("status", "active");
+    const validStaffIds = new Set(
+      ((validStaffData || []) as Array<{ id: string }>).map((s) => s.id)
+    );
 
     const cleanRecords = records
       .filter(
@@ -153,39 +176,32 @@ export async function POST(req: Request) {
       );
     }
 
-    const existing = await db.staffAttendance.findMany({
-      where: {
-        date,
-        staffId: { in: cleanRecords.map((r) => r.staffId) },
-      },
-      select: { id: true, staffId: true },
-    });
-    const existingMap = new Map(existing.map((e) => [e.staffId, e.id]));
+    const cleanStaffIds = cleanRecords.map((r) => r.staffId);
 
-    const operations = cleanRecords.map((r) => {
-      const existingId = existingMap.get(r.staffId);
-      if (existingId) {
-        return db.staffAttendance.update({
-          where: { id: existingId },
-          data: {
-            status: r.status,
-            checkIn: r.checkIn,
-            checkOut: r.checkOut,
-          },
-        });
-      }
-      return db.staffAttendance.create({
-        data: {
-          staffId: r.staffId,
-          date,
-          status: r.status,
-          checkIn: r.checkIn,
-          checkOut: r.checkOut,
-        },
-      });
-    });
+    // Delete existing attendance for these staff on this date
+    const { error: deleteErr } = await supabaseAdmin
+      .from("staff_attendance")
+      .delete()
+      .eq("date", date)
+      .in("staff_id", cleanStaffIds);
+    if (deleteErr) {
+      throw deleteErr;
+    }
 
-    await db.$transaction(operations);
+    // Insert new records
+    const insertRows = cleanRecords.map((r) => ({
+      staff_id: r.staffId,
+      date,
+      status: r.status,
+      check_in: r.checkIn,
+      check_out: r.checkOut,
+    }));
+    const { error: insertErr } = await supabaseAdmin
+      .from("staff_attendance")
+      .insert(insertRows);
+    if (insertErr) {
+      throw insertErr;
+    }
 
     return NextResponse.json({
       success: true,

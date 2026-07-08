@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { verifyPassword, setSessionCookie } from "@/lib/auth";
-import type { Role } from "@/types";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+// POST /api/auth/login — login using Supabase Auth
 export async function POST(req: NextRequest) {
   try {
     const { email, password } = await req.json();
@@ -14,45 +13,49 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const profile = await db.profile.findUnique({
-      where: { email: email.toLowerCase().trim() },
+    const supabase = await createSupabaseServerClient();
+
+    // Sign in with Supabase Auth
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.toLowerCase().trim(),
+      password,
     });
 
-    if (!profile) {
+    if (error || !data.user) {
       return NextResponse.json(
         { error: "Invalid email or password" },
         { status: 401 }
       );
     }
 
-    if (profile.status !== "active") {
+    // Fetch profile using admin client (bypasses RLS)
+    const { supabaseAdmin } = await import("@/lib/supabase/admin");
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("id, email, name, role, school_id, phone, avatar, status, student_id, staff_id")
+      .eq("id", data.user.id)
+      .single();
+
+    if (!profile || profile.status !== "active") {
       return NextResponse.json(
         { error: "Your account has been suspended. Please contact the administrator." },
         { status: 403 }
       );
     }
 
-    if (!verifyPassword(password, profile.password)) {
-      return NextResponse.json(
-        { error: "Invalid email or password" },
-        { status: 401 }
-      );
-    }
-
-    await setSessionCookie(profile.id);
-
+    // Return camelCase response
     return NextResponse.json({
       user: {
         id: profile.id,
         email: profile.email,
         name: profile.name,
-        role: profile.role as Role,
-        schoolId: profile.schoolId,
-        phone: profile.phone,
-        avatar: profile.avatar,
+        role: profile.role,
+        schoolId: profile.school_id || null,
+        phone: profile.phone || null,
+        avatar: profile.avatar || null,
         status: profile.status,
-        studentId: profile.studentId,
-        staffId: profile.staffId,
+        studentId: profile.student_id || null,
+        staffId: profile.staff_id || null,
       },
     });
   } catch (error) {

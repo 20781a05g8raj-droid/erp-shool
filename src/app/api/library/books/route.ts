@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // GET /api/library/books — list with optional ?search=&category= filters
@@ -14,26 +14,40 @@ export async function GET(req: NextRequest) {
   const search = searchParams.get("search")?.trim();
   const category = searchParams.get("category");
 
-  const where: Record<string, unknown> = { schoolId };
-  if (category && category !== "all") where.category = category;
+  let query = supabaseAdmin
+    .from("library_books")
+    .select("*")
+    .eq("school_id", schoolId)
+    .order("created_at", { ascending: false });
+
+  if (category && category !== "all") {
+    query = query.eq("category", category);
+  }
   if (search) {
-    where.OR = [
-      { title: { contains: search } },
-      { author: { contains: search } },
-      { isbn: { contains: search } },
-      { publisher: { contains: search } },
-    ];
+    query = query.or(
+      `title.ilike.%${search}%,author.ilike.%${search}%,isbn.ilike.%${search}%,publisher.ilike.%${search}%`
+    );
   }
 
-  const books = await db.libraryBook.findMany({
-    where,
-    orderBy: [{ createdAt: "desc" }],
-    include: {
-      _count: { select: { issues: true } },
-    },
-  });
+  const { data: booksRaw, error } = await query;
 
-  return NextResponse.json(books);
+  if (error) {
+    return NextResponse.json({ error: "Failed to fetch books" }, { status: 500 });
+  }
+
+  // Compute issue count for each book
+  const books = await Promise.all(
+    (booksRaw || []).map(async (b: Record<string, unknown>) => {
+      const { count } = await supabaseAdmin
+        .from("book_issues")
+        .select("*", { count: "exact", head: true })
+        .eq("book_id", b.id as string);
+      b._count = { issues: count || 0 };
+      return b;
+    })
+  );
+
+  return NextResponse.json(toCamelCase(books as Record<string, unknown>[]));
 }
 
 // POST /api/library/books — create book
@@ -60,10 +74,12 @@ export async function POST(req: NextRequest) {
 
   // ISBN uniqueness within school (if provided)
   if (body.isbn && typeof body.isbn === "string" && body.isbn.trim()) {
-    const conflict = await db.libraryBook.findFirst({
-      where: { schoolId, isbn: body.isbn.trim() },
-      select: { id: true },
-    });
+    const { data: conflict } = await supabaseAdmin
+      .from("library_books")
+      .select("id")
+      .eq("school_id", schoolId)
+      .eq("isbn", body.isbn.trim())
+      .maybeSingle();
     if (conflict) {
       return NextResponse.json(
         { error: "A book with this ISBN already exists" },
@@ -73,21 +89,33 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const book = await db.libraryBook.create({
-      data: {
+    const { data: book, error } = await supabaseAdmin
+      .from("library_books")
+      .insert({
         title: body.title.trim(),
         author: body.author?.trim() || null,
         isbn: body.isbn?.trim() || null,
         category: body.category?.trim() || null,
         publisher: body.publisher?.trim() || null,
-        totalCopies,
-        availableCopies: totalCopies,
-        coverImage: body.coverImage?.trim() || null,
-        shelfLocation: body.shelfLocation?.trim() || null,
-        schoolId,
-      },
-    });
-    return NextResponse.json(book, { status: 201 });
+        total_copies: totalCopies,
+        available_copies: totalCopies,
+        cover_image: body.coverImage?.trim() || null,
+        shelf_location: body.shelfLocation?.trim() || null,
+        school_id: schoolId,
+      })
+      .select("*")
+      .single();
+
+    if (error || !book) {
+      return NextResponse.json(
+        { error: "Failed to create book" },
+        { status: 500 }
+      );
+    }
+    return NextResponse.json(
+      toCamelCase(book as Record<string, unknown>),
+      { status: 201 }
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create book";
     return NextResponse.json({ error: message }, { status: 500 });

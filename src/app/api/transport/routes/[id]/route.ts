@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 type RouteParams = { params: Promise<{ id: string }> };
@@ -12,11 +12,14 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   }
 
   const { id } = await params;
-  const existing = await db.transportRoute.findFirst({
-    where: { id, schoolId: user.schoolId },
-    select: { id: true },
-  });
-  if (!existing) {
+  const { data: existing, error: existError } = await supabaseAdmin
+    .from("transport_routes")
+    .select("id")
+    .eq("id", id)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
+
+  if (existError || !existing) {
     return NextResponse.json({ error: "Route not found" }, { status: 404 });
   }
 
@@ -43,19 +46,37 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   const fare = typeof body.fare === "number" ? body.fare : Number(body.fare) || 0;
 
   try {
-    const updated = await db.transportRoute.update({
-      where: { id },
-      data: {
+    const { data: updated, error } = await supabaseAdmin
+      .from("transport_routes")
+      .update({
         name: body.name.trim(),
         stops: stopsCsv,
         fare,
-      },
-      include: {
-        vehicles: true,
-        _count: { select: { studentTransport: true, vehicles: true } },
-      },
-    });
-    return NextResponse.json(updated);
+      })
+      .eq("id", id)
+      .select("*, vehicles(*)")
+      .single();
+
+    if (error || !updated) {
+      return NextResponse.json(
+        { error: "Failed to update route" },
+        { status: 500 }
+      );
+    }
+
+    // Compute counts
+    const { count: studentCount } = await supabaseAdmin
+      .from("student_transport")
+      .select("*", { count: "exact", head: true })
+      .eq("route_id", id);
+    (updated as Record<string, unknown>)._count = {
+      studentTransport: studentCount || 0,
+      vehicles: ((updated as Record<string, unknown>).vehicles as unknown[])?.length || 0,
+    };
+
+    return NextResponse.json(
+      toCamelCase(updated as Record<string, unknown>)
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to update route";
     return NextResponse.json({ error: message }, { status: 500 });
@@ -70,21 +91,26 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams) {
   }
 
   const { id } = await params;
-  const existing = await db.transportRoute.findFirst({
-    where: { id, schoolId: user.schoolId },
-    select: {
-      id: true,
-      _count: { select: { vehicles: true, studentTransport: true } },
-    },
-  });
-  if (!existing) {
+  const { data: existing, error: existError } = await supabaseAdmin
+    .from("transport_routes")
+    .select("id")
+    .eq("id", id)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
+
+  if (existError || !existing) {
     return NextResponse.json({ error: "Route not found" }, { status: 404 });
   }
 
-  if (existing._count.studentTransport > 0) {
+  const { count: studentTransportCount } = await supabaseAdmin
+    .from("student_transport")
+    .select("*", { count: "exact", head: true })
+    .eq("route_id", id);
+
+  if ((studentTransportCount || 0) > 0) {
     return NextResponse.json(
       {
-        error: `Cannot delete route: ${existing._count.studentTransport} student(s) are still assigned`,
+        error: `Cannot delete route: ${studentTransportCount} student(s) are still assigned`,
       },
       { status: 400 }
     );
@@ -92,11 +118,22 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams) {
 
   try {
     // Unassign any vehicles still linked to this route (so we can delete cleanly)
-    await db.vehicle.updateMany({
-      where: { routeId: id },
-      data: { routeId: null },
-    });
-    await db.transportRoute.delete({ where: { id } });
+    await supabaseAdmin
+      .from("vehicles")
+      .update({ route_id: null })
+      .eq("route_id", id);
+
+    const { error } = await supabaseAdmin
+      .from("transport_routes")
+      .delete()
+      .eq("id", id);
+
+    if (error) {
+      return NextResponse.json(
+        { error: "Failed to delete route" },
+        { status: 500 }
+      );
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to delete route";

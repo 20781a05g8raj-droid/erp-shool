@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // GET /api/library/issues — list with optional ?status= filter (include book + student)
@@ -14,46 +14,32 @@ export async function GET(req: NextRequest) {
   const status = searchParams.get("status");
   const studentId = searchParams.get("studentId");
 
-  // Filter issues by school via the book relation
-  const where: Record<string, unknown> = {
-    book: { schoolId },
-  };
-  if (status && status !== "all") where.status = status;
-  if (studentId) where.studentId = studentId;
+  let query = supabaseAdmin
+    .from("book_issues")
+    .select(
+      "*, books!inner(id, school_id, title, author, isbn, category), students(id, first_name, last_name, admission_number, classes(id, name), sections(id, name))"
+    )
+    .eq("books.school_id", schoolId)
+    .order("created_at", { ascending: false });
 
-  const issues = await db.bookIssue.findMany({
-    where,
-    orderBy: [{ createdAt: "desc" }],
-    include: {
-      book: {
-        select: {
-          id: true,
-          title: true,
-          author: true,
-          isbn: true,
-          category: true,
-        },
-      },
-      student: {
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          admissionNumber: true,
-          class: { select: { id: true, name: true } },
-          section: { select: { id: true, name: true } },
-        },
-      },
-    },
-  });
+  if (status && status !== "all") query = query.eq("status", status);
+  if (studentId) query = query.eq("student_id", studentId);
+
+  const { data: issuesRaw, error } = await query;
+
+  if (error) {
+    return NextResponse.json({ error: "Failed to fetch issues" }, { status: 500 });
+  }
+
+  const issues = (issuesRaw || []) as Array<Record<string, unknown>>;
 
   // Compute live fine + overdue status for active issues
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
   const enriched = issues.map((issue) => {
-    if (issue.status === "returned") return issue;
-    const due = new Date(issue.dueDate);
+    if ((issue.status as string) === "returned") return issue;
+    const due = new Date(issue.due_date as string);
     due.setHours(0, 0, 0, 0);
     if (today > due) {
       const daysOverdue = Math.floor(
@@ -69,7 +55,9 @@ export async function GET(req: NextRequest) {
     return issue;
   });
 
-  return NextResponse.json(enriched);
+  return NextResponse.json(
+    toCamelCase(enriched as Record<string, unknown>[])
+  );
 }
 
 // POST /api/library/issues — issue a book (decrements availableCopies)
@@ -93,14 +81,17 @@ export async function POST(req: NextRequest) {
   }
 
   // Verify book belongs to school and has available copies
-  const book = await db.libraryBook.findFirst({
-    where: { id: bookId, schoolId: user.schoolId },
-    select: { id: true, availableCopies: true, title: true },
-  });
-  if (!book) {
+  const { data: book, error: bookError } = await supabaseAdmin
+    .from("library_books")
+    .select("id, available_copies, title")
+    .eq("id", bookId)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
+
+  if (bookError || !book) {
     return NextResponse.json({ error: "Book not found" }, { status: 404 });
   }
-  if (book.availableCopies <= 0) {
+  if ((book.available_copies as number) <= 0) {
     return NextResponse.json(
       { error: "No copies available for issue" },
       { status: 400 }
@@ -109,10 +100,12 @@ export async function POST(req: NextRequest) {
 
   // Verify student belongs to same school (if provided)
   if (studentId) {
-    const student = await db.student.findFirst({
-      where: { id: studentId, schoolId: user.schoolId },
-      select: { id: true, firstName: true, lastName: true },
-    });
+    const { data: student } = await supabaseAdmin
+      .from("students")
+      .select("id, first_name, last_name")
+      .eq("id", studentId)
+      .eq("school_id", user.schoolId)
+      .maybeSingle();
     if (!student) {
       return NextResponse.json(
         { error: "Student not found" },
@@ -121,48 +114,52 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Issue + decrement availableCopies atomically
+  // Issue + decrement availableCopies (sequentially since Supabase JS client has no transactions)
   try {
-    const [issue] = await db.$transaction([
-      db.bookIssue.create({
-        data: {
-          bookId,
-          studentId: studentId || null,
-          staffId: staffId || null,
-          borrowerName: borrowerName || null,
-          issueDate,
-          dueDate,
-          status: "issued",
-          fine: 0,
-        },
-        include: {
-          book: {
-            select: {
-              id: true,
-              title: true,
-              author: true,
-              isbn: true,
-              category: true,
-            },
-          },
-          student: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              admissionNumber: true,
-              class: { select: { id: true, name: true } },
-              section: { select: { id: true, name: true } },
-            },
-          },
-        },
-      }),
-      db.libraryBook.update({
-        where: { id: bookId },
-        data: { availableCopies: { decrement: 1 } },
-      }),
-    ]);
-    return NextResponse.json(issue, { status: 201 });
+    const { data: issue, error: issueError } = await supabaseAdmin
+      .from("book_issues")
+      .insert({
+        book_id: bookId,
+        student_id: studentId || null,
+        staff_id: staffId || null,
+        borrower_name: borrowerName || null,
+        issue_date: issueDate,
+        due_date: dueDate,
+        status: "issued",
+        fine: 0,
+      })
+      .select(
+        "*, books(id, title, author, isbn, category), students(id, first_name, last_name, admission_number, classes(id, name), sections(id, name))"
+      )
+      .single();
+
+    if (issueError || !issue) {
+      return NextResponse.json(
+        { error: "Failed to issue book" },
+        { status: 500 }
+      );
+    }
+
+    // Decrement available_copies
+    const newAvailable = Math.max(0, (book.available_copies as number) - 1);
+    const { error: updateError } = await supabaseAdmin
+      .from("library_books")
+      .update({ available_copies: newAvailable })
+      .eq("id", bookId);
+
+    if (updateError) {
+      // Best effort: rollback issue
+      await supabaseAdmin.from("book_issues").delete().eq("id", issue.id);
+      return NextResponse.json(
+        { error: "Failed to update book inventory" },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json(
+      toCamelCase(issue as Record<string, unknown>),
+      { status: 201 }
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to issue book";
     return NextResponse.json({ error: message }, { status: 500 });

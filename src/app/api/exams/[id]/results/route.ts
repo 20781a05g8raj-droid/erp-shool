@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // Standard grading scale
@@ -20,7 +20,7 @@ export function gradeForMarks(marks: number, max: number): string {
 
 // GET /api/exams/[id]/results — all results for exam
 export async function GET(
-  req: NextRequest,
+  _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const user = await getCurrentUser();
@@ -29,31 +29,30 @@ export async function GET(
   }
 
   const { id } = await params;
-  const exam = await db.exam.findFirst({
-    where: { id, schoolId: user.schoolId },
-    select: { id: true, classId: true, maxMarks: true },
-  });
-  if (!exam) {
+  const { data: examRaw, error: examError } = await supabaseAdmin
+    .from("exams")
+    .select("id, class_id, max_marks")
+    .eq("id", id)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
+
+  if (examError || !examRaw) {
     return NextResponse.json({ error: "Exam not found" }, { status: 404 });
   }
 
-  const results = await db.examResult.findMany({
-    where: { examId: id },
-    include: {
-      subject: { select: { id: true, name: true, code: true } },
-      student: {
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          admissionNumber: true,
-          rollNumber: true,
-        },
-      },
-    },
-  });
+  const { data: resultsRaw, error: resultsError } = await supabaseAdmin
+    .from("exam_results")
+    .select(
+      "*, subject:subjects(id, name, code), student:students(id, first_name, last_name, admission_number, roll_number)"
+    )
+    .eq("exam_id", id);
 
-  return NextResponse.json({ results });
+  if (resultsError) {
+    return NextResponse.json({ error: resultsError.message }, { status: 500 });
+  }
+
+  const results = (resultsRaw || []) as Array<Record<string, unknown>>;
+  return NextResponse.json({ results: results.map((r) => toCamelCase(r)) });
 }
 
 // POST /api/exams/[id]/results — bulk save/upsert results
@@ -68,13 +67,18 @@ export async function POST(
 
   try {
     const { id } = await params;
-    const exam = await db.exam.findFirst({
-      where: { id, schoolId: user.schoolId },
-      select: { id: true, maxMarks: true },
-    });
-    if (!exam) {
+    const { data: examRaw, error: examError } = await supabaseAdmin
+      .from("exams")
+      .select("id, max_marks")
+      .eq("id", id)
+      .eq("school_id", user.schoolId)
+      .maybeSingle();
+
+    if (examError || !examRaw) {
       return NextResponse.json({ error: "Exam not found" }, { status: 404 });
     }
+
+    const exam = examRaw as { id: string; max_marks: number };
 
     const body = await req.json();
     const { results } = body as {
@@ -113,45 +117,41 @@ export async function POST(
 
     let upserted = 0;
     for (const r of results) {
-      const max = r.maxMarks ?? exam.maxMarks;
-      if (r.marksObtained > max) {
-        // clamp
-        r.marksObtained = max;
-      }
-      const grade = r.grade || gradeForMarks(r.marksObtained, max);
+      const max = r.maxMarks ?? exam.max_marks;
+      const marksObtained = r.marksObtained > max ? max : r.marksObtained;
+      const grade = r.grade || gradeForMarks(marksObtained, max);
 
       // Find existing record (examId + studentId + subjectId)
-      const existing = await db.examResult.findFirst({
-        where: {
-          examId: id,
-          studentId: r.studentId,
-          subjectId: r.subjectId,
-        },
-        select: { id: true },
-      });
+      const { data: existing } = await supabaseAdmin
+        .from("exam_results")
+        .select("id")
+        .eq("exam_id", id)
+        .eq("student_id", r.studentId)
+        .eq("subject_id", r.subjectId)
+        .maybeSingle();
+
+      const row = {
+        exam_id: id,
+        student_id: r.studentId,
+        subject_id: r.subjectId,
+        marks_obtained: marksObtained,
+        max_marks: max,
+        grade,
+        remarks: r.remarks || null,
+      };
 
       if (existing) {
-        await db.examResult.update({
-          where: { id: existing.id },
-          data: {
-            marksObtained: r.marksObtained,
-            maxMarks: max,
+        await supabaseAdmin
+          .from("exam_results")
+          .update({
+            marks_obtained: marksObtained,
+            max_marks: max,
             grade,
             remarks: r.remarks || null,
-          },
-        });
+          })
+          .eq("id", (existing as { id: string }).id);
       } else {
-        await db.examResult.create({
-          data: {
-            examId: id,
-            studentId: r.studentId,
-            subjectId: r.subjectId,
-            marksObtained: r.marksObtained,
-            maxMarks: max,
-            grade,
-            remarks: r.remarks || null,
-          },
-        });
+        await supabaseAdmin.from("exam_results").insert(row);
       }
       upserted++;
     }

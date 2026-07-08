@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // GET /api/exams/[id] — single exam with results grouped by student+subject
 export async function GET(
-  req: NextRequest,
+  _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const user = await getCurrentUser();
@@ -14,50 +14,57 @@ export async function GET(
 
   const { id } = await params;
 
-  const exam = await db.exam.findFirst({
-    where: { id, schoolId: user.schoolId },
-    include: {
-      class: { select: { id: true, name: true } },
-      results: {
-        include: {
-          subject: { select: { id: true, name: true, code: true } },
-          student: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              admissionNumber: true,
-              rollNumber: true,
-            },
-          },
-        },
-        orderBy: { student: { firstName: "asc" } },
-      },
-    },
-  });
+  const { data: examRaw, error } = await supabaseAdmin
+    .from("exams")
+    .select(
+      "*, class:classes(id, name), exam_results(*, subject:subjects(id, name, code), student:students(id, first_name, last_name, admission_number, roll_number))"
+    )
+    .eq("id", id)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
 
-  if (!exam) {
+  if (error || !examRaw) {
     return NextResponse.json({ error: "Exam not found" }, { status: 404 });
   }
 
+  const exam = examRaw as Record<string, unknown>;
+  const examResults = (exam.exam_results as Array<Record<string, unknown>>) || [];
+
+  // Sort results by student first name asc (Prisma did orderBy: student.firstName asc)
+  examResults.sort((a, b) => {
+    const sa = (a.student as Record<string, unknown> | null)?.first_name as string || "";
+    const sb = (b.student as Record<string, unknown> | null)?.first_name as string || "";
+    return sa.localeCompare(sb);
+  });
+
   // Get subjects for this class (via class_subjects)
-  const classSubjects = await db.classSubject.findMany({
-    where: { classId: exam.classId },
-    include: { subject: { select: { id: true, name: true, code: true } } },
-    orderBy: { subject: { name: "asc" } },
+  const { data: classSubjectsRaw } = await supabaseAdmin
+    .from("class_subjects")
+    .select("*, subject:subjects(id, name, code)")
+    .eq("class_id", exam.class_id as string);
+
+  const classSubjects = (classSubjectsRaw || []) as Array<Record<string, unknown>>;
+  classSubjects.sort((a, b) => {
+    const sa = (a.subject as Record<string, unknown> | null)?.name as string || "";
+    const sb = (b.subject as Record<string, unknown> | null)?.name as string || "";
+    return sa.localeCompare(sb);
   });
 
   // Get students of this class
-  const students = await db.student.findMany({
-    where: { classId: exam.classId, status: "active" },
-    select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      admissionNumber: true,
-      rollNumber: true,
-    },
-    orderBy: [{ rollNumber: "asc" }, { firstName: "asc" }],
+  const { data: studentsRaw } = await supabaseAdmin
+    .from("students")
+    .select("id, first_name, last_name, admission_number, roll_number")
+    .eq("class_id", exam.class_id as string)
+    .eq("status", "active");
+
+  const students = (studentsRaw || []) as Array<Record<string, unknown>>;
+  students.sort((a, b) => {
+    const ra = (a.roll_number as string) || "";
+    const rb = (b.roll_number as string) || "";
+    if (ra !== rb) return ra.localeCompare(rb);
+    const fa = (a.first_name as string) || "";
+    const fb = (b.first_name as string) || "";
+    return fa.localeCompare(fb);
   });
 
   return NextResponse.json({
@@ -65,16 +72,18 @@ export async function GET(
       id: exam.id,
       name: exam.name,
       type: exam.type,
-      classId: exam.classId,
-      startDate: exam.startDate,
-      endDate: exam.endDate,
-      maxMarks: exam.maxMarks,
-      class: exam.class,
-      createdAt: exam.createdAt,
+      classId: exam.class_id,
+      startDate: exam.start_date,
+      endDate: exam.end_date,
+      maxMarks: exam.max_marks,
+      class: toCamelCase(exam.class as Record<string, unknown>),
+      createdAt: exam.created_at,
     },
-    subjects: classSubjects.map((cs) => cs.subject),
-    students,
-    results: exam.results,
+    subjects: classSubjects.map((cs) =>
+      toCamelCase(cs.subject as Record<string, unknown>)
+    ),
+    students: students.map((s) => toCamelCase(s)),
+    results: examResults.map((r) => toCamelCase(r)),
   });
 }
 
@@ -90,11 +99,14 @@ export async function PUT(
 
   try {
     const { id } = await params;
-    const existing = await db.exam.findFirst({
-      where: { id, schoolId: user.schoolId },
-      select: { id: true },
-    });
-    if (!existing) {
+    const { data: existing, error: existError } = await supabaseAdmin
+      .from("exams")
+      .select("id")
+      .eq("id", id)
+      .eq("school_id", user.schoolId)
+      .maybeSingle();
+
+    if (existError || !existing) {
       return NextResponse.json({ error: "Exam not found" }, { status: 404 });
     }
 
@@ -110,16 +122,24 @@ export async function PUT(
     const data: Record<string, unknown> = {};
     if (name && typeof name === "string") data.name = name.trim();
     if (type && ["unit_test", "mid_term", "final"].includes(type)) data.type = type;
-    if (startDate) data.startDate = startDate;
-    if (endDate) data.endDate = endDate;
-    if (typeof maxMarks === "number" && maxMarks > 0) data.maxMarks = maxMarks;
+    if (startDate) data.start_date = startDate;
+    if (endDate) data.end_date = endDate;
+    if (typeof maxMarks === "number" && maxMarks > 0) data.max_marks = maxMarks;
 
-    const updated = await db.exam.update({
-      where: { id },
-      data,
-      include: { class: { select: { id: true, name: true } } },
-    });
-    return NextResponse.json(updated);
+    const { data: updatedRaw, error: updateError } = await supabaseAdmin
+      .from("exams")
+      .update(data)
+      .eq("id", id)
+      .select("*, class:classes(id, name)")
+      .single();
+
+    if (updateError || !updatedRaw) {
+      return NextResponse.json(
+        { error: updateError?.message || "Failed to update exam" },
+        { status: 500 }
+      );
+    }
+    return NextResponse.json(toCamelCase(updatedRaw as Record<string, unknown>));
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to update exam";
     return NextResponse.json({ error: message }, { status: 500 });
@@ -128,7 +148,7 @@ export async function PUT(
 
 // DELETE /api/exams/[id]
 export async function DELETE(
-  req: NextRequest,
+  _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const user = await getCurrentUser();
@@ -138,16 +158,26 @@ export async function DELETE(
 
   try {
     const { id } = await params;
-    const existing = await db.exam.findFirst({
-      where: { id, schoolId: user.schoolId },
-      select: { id: true },
-    });
-    if (!existing) {
+    const { data: existing, error: existError } = await supabaseAdmin
+      .from("exams")
+      .select("id")
+      .eq("id", id)
+      .eq("school_id", user.schoolId)
+      .maybeSingle();
+
+    if (existError || !existing) {
       return NextResponse.json({ error: "Exam not found" }, { status: 404 });
     }
 
-    // Results cascade-delete via onDelete: Cascade
-    await db.exam.delete({ where: { id } });
+    // Results cascade-delete via FK ON DELETE CASCADE
+    const { error: deleteError } = await supabaseAdmin
+      .from("exams")
+      .delete()
+      .eq("id", id);
+
+    if (deleteError) {
+      return NextResponse.json({ error: deleteError.message }, { status: 500 });
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to delete exam";

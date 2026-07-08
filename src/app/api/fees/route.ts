@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 function computeStatus(paid: number, total: number, dueDate: string | null): string {
   if (paid >= total && total > 0) return "paid";
   if (paid > 0) return "partial";
-  // paid == 0
   if (dueDate) {
     const today = new Date().toISOString().split("T")[0];
     if (dueDate < today) return "overdue";
@@ -32,62 +31,100 @@ export async function GET(req: Request) {
       ? user.studentId
       : studentId;
 
-  // First, refresh overdue statuses based on due date
-  const allFees = await db.studentFee.findMany({
-    where: { student: { schoolId: user.schoolId } },
-    include: { payments: true },
-  });
-  const todayStr = new Date().toISOString().split("T")[0];
+  // First, refresh overdue statuses based on due date for the school's student fees
+  const { data: allFeesRaw } = await supabaseAdmin
+    .from("student_fees")
+    .select(
+      "id, paid_amount, total_amount, due_date, status, students!inner(school_id)"
+    )
+    .eq("students.school_id", user.schoolId);
+
+  const allFees = (allFeesRaw || []) as Array<{
+    id: string;
+    paid_amount: number;
+    total_amount: number;
+    due_date: string | null;
+    status: string;
+  }>;
+
   for (const sf of allFees) {
-    const correct = computeStatus(sf.paidAmount, sf.totalAmount, sf.dueDate);
+    const correct = computeStatus(sf.paid_amount, sf.total_amount, sf.due_date);
     if (correct !== sf.status) {
-      await db.studentFee.update({
-        where: { id: sf.id },
-        data: { status: correct },
-      });
+      await supabaseAdmin
+        .from("student_fees")
+        .update({ status: correct })
+        .eq("id", sf.id);
     }
   }
-  void todayStr;
 
-  const studentWhere: {
-    schoolId: string;
-    classId?: string;
-    id?: string;
-    OR?: { firstName?: { contains: string }; lastName?: { contains: string }; admissionNumber?: { contains: string } }[];
-  } = { schoolId: user.schoolId };
+  // Find matching student IDs first (for search/class scoping)
+  let matchingStudentIds: string[] | null = null;
+  if (search || classId) {
+    let studentQuery = supabaseAdmin
+      .from("students")
+      .select("id")
+      .eq("school_id", user.schoolId);
+    if (classId) studentQuery = studentQuery.eq("class_id", classId);
+    if (search) {
+      studentQuery = studentQuery.or(
+        `first_name.ilike.%${search}%,last_name.ilike.%${search}%,admission_number.ilike.%${search}%`
+      );
+    }
+    const { data: matchingStudents } = await studentQuery;
+    matchingStudentIds = (matchingStudents || []).map(
+      (s) => (s as { id: string }).id
+    );
+    if (matchingStudentIds.length === 0) {
+      return NextResponse.json({ studentFees: [] });
+    }
+  }
 
+  let query = supabaseAdmin
+    .from("student_fees")
+    .select(
+      "*, students!inner(id, first_name, last_name, admission_number, school_id, classes(id, name)), fee_structures(*), fee_payments(*)"
+    )
+    .order("created_at", { ascending: false });
+
+  // Apply student filter (scoped OR by matching IDs)
   if (scopedStudentId) {
-    studentWhere.id = scopedStudentId;
+    query = query.eq("student_id", scopedStudentId);
+  } else if (matchingStudentIds) {
+    query = query.in("student_id", matchingStudentIds);
   }
-  if (classId) {
-    studentWhere.classId = classId;
-  }
-  if (search) {
-    studentWhere.OR = [
-      { firstName: { contains: search } },
-      { lastName: { contains: search } },
-      { admissionNumber: { contains: search } },
-    ];
-  }
+  // Always scope by school via the embedded student relation
+  query = query.eq("students.school_id", user.schoolId);
 
-  const where: { student: typeof studentWhere; status?: string } = {
-    student: studentWhere,
-  };
   if (status && status !== "all") {
-    where.status = status;
+    query = query.eq("status", status);
   }
 
-  const studentFees = await db.studentFee.findMany({
-    where,
-    include: {
-      student: { include: { class: true } },
-      feeStructure: true,
-      payments: { orderBy: { paymentDate: "desc" } },
-    },
-    orderBy: { createdAt: "desc" },
+  // Order payments by date desc — need a separate sort since Supabase doesn't support
+  // per-relation ordering inline. We'll sort in JS below.
+  const { data: studentFeesRaw, error } = await query;
+
+  if (error) {
+    return NextResponse.json(
+      { error: "Failed to fetch student fees" },
+      { status: 500 }
+    );
+  }
+
+  // Sort payments desc by payment_date for each fee
+  const sorted = (studentFeesRaw || []).map((sf: Record<string, unknown>) => {
+    const payments = (sf.fee_payments as Array<Record<string, unknown>>) || [];
+    payments.sort((a, b) => {
+      const pa = (a.payment_date as string) || "";
+      const pb = (b.payment_date as string) || "";
+      return pb.localeCompare(pa);
+    });
+    sf.fee_payments = payments;
+    return sf;
   });
 
-  return NextResponse.json({ studentFees });
+  return NextResponse.json({
+    studentFees: toCamelCase(sorted as Record<string, unknown>[]),
+  });
 }
 
 // POST — assign fee structure to a student or all students in a class
@@ -113,10 +150,14 @@ export async function POST(req: Request) {
       );
     }
 
-    const feeStructure = await db.feeStructure.findFirst({
-      where: { id: feeStructureId, schoolId: user.schoolId },
-    });
-    if (!feeStructure) {
+    const { data: feeStructure, error: fsError } = await supabaseAdmin
+      .from("fee_structures")
+      .select("*")
+      .eq("id", feeStructureId)
+      .eq("school_id", user.schoolId)
+      .maybeSingle();
+
+    if (fsError || !feeStructure) {
       return NextResponse.json(
         { error: "Fee structure not found" },
         { status: 404 }
@@ -131,11 +172,15 @@ export async function POST(req: Request) {
           { status: 400 }
         );
       }
-      const students = await db.student.findMany({
-        where: { schoolId: user.schoolId, classId, status: "active" },
-        select: { id: true },
-      });
-      targetStudentIds = students.map((s) => s.id);
+      const { data: students } = await supabaseAdmin
+        .from("students")
+        .select("id")
+        .eq("school_id", user.schoolId)
+        .eq("class_id", classId)
+        .eq("status", "active");
+      targetStudentIds = (students || []).map(
+        (s) => (s as { id: string }).id
+      );
     } else {
       if (!studentId) {
         return NextResponse.json(
@@ -154,14 +199,15 @@ export async function POST(req: Request) {
     }
 
     // Avoid duplicates: skip students who already have a StudentFee for this structure
-    const existing = await db.studentFee.findMany({
-      where: {
-        feeStructureId,
-        studentId: { in: targetStudentIds },
-      },
-      select: { studentId: true },
-    });
-    const existingSet = new Set(existing.map((e) => e.studentId));
+    const { data: existing } = await supabaseAdmin
+      .from("student_fees")
+      .select("student_id")
+      .eq("fee_structure_id", feeStructureId)
+      .in("student_id", targetStudentIds);
+
+    const existingSet = new Set(
+      (existing || []).map((e) => (e as { student_id: string }).student_id)
+    );
     const newIds = targetStudentIds.filter((id) => !existingSet.has(id));
 
     if (newIds.length === 0) {
@@ -172,17 +218,26 @@ export async function POST(req: Request) {
       });
     }
 
-    await db.studentFee.createMany({
-      data: newIds.map((sid) => ({
-        studentId: sid,
-        feeStructureId,
-        totalAmount: feeStructure.totalAmount,
-        paidAmount: 0,
-        dueAmount: feeStructure.totalAmount,
-        dueDate: feeStructure.dueDate,
-        status: "pending",
-      })),
-    });
+    const rows = newIds.map((sid) => ({
+      student_id: sid,
+      fee_structure_id: feeStructureId,
+      total_amount: feeStructure.total_amount,
+      paid_amount: 0,
+      due_amount: feeStructure.total_amount,
+      due_date: feeStructure.due_date,
+      status: "pending",
+    }));
+
+    const { error: insertError } = await supabaseAdmin
+      .from("student_fees")
+      .insert(rows);
+
+    if (insertError) {
+      return NextResponse.json(
+        { error: "Failed to assign fee structure" },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json({
       assigned: newIds.length,

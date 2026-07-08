@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
+
+const STAFF_FIELDS =
+  "id, employee_id, first_name, last_name, email, phone, designation, department, type, photo, salary";
+
+const PAYROLL_SELECT = `*, staff:staff(${STAFF_FIELDS})`;
 
 // GET /api/hr/payroll — list payrolls with filters (month, year, status)
 // Role scoping: teacher sees only their own payrolls
@@ -20,51 +25,51 @@ export async function GET(req: Request) {
   const scopedStaffId =
     user.role === "teacher" && user.staffId ? user.staffId : staffId;
 
-  const where: {
-    staff: { schoolId: string; id?: string };
-    month?: number;
-    year?: number;
-    status?: string;
-  } = {
-    staff: { schoolId: user.schoolId },
-  };
+  // Get school's staff IDs
+  const { data: schoolStaff, error: ssError } = await supabaseAdmin
+    .from("staff")
+    .select("id")
+    .eq("school_id", user.schoolId);
+
+  if (ssError) {
+    return NextResponse.json({ error: "Failed to fetch payrolls" }, { status: 500 });
+  }
+
+  const schoolStaffIds = (schoolStaff || []).map((s) => (s as { id: string }).id);
+  if (schoolStaffIds.length === 0) {
+    return NextResponse.json({ payrolls: [] });
+  }
+
+  let query = supabaseAdmin
+    .from("payrolls")
+    .select(PAYROLL_SELECT)
+    .in("staff_id", schoolStaffIds);
 
   if (scopedStaffId) {
-    where.staff.id = scopedStaffId;
+    query = query.eq("staff_id", scopedStaffId);
   }
   if (month && !isNaN(parseInt(month, 10))) {
-    where.month = parseInt(month, 10);
+    query = query.eq("month", parseInt(month, 10));
   }
   if (year && !isNaN(parseInt(year, 10))) {
-    where.year = parseInt(year, 10);
+    query = query.eq("year", parseInt(year, 10));
   }
   if (status && status !== "all") {
-    where.status = status;
+    query = query.eq("status", status);
   }
 
-  const payrolls = await db.payroll.findMany({
-    where,
-    include: {
-      staff: {
-        select: {
-          id: true,
-          employeeId: true,
-          firstName: true,
-          lastName: true,
-          email: true,
-          phone: true,
-          designation: true,
-          department: true,
-          type: true,
-          photo: true,
-          salary: true,
-        },
-      },
-    },
-    orderBy: [{ year: "desc" }, { month: "desc" }, { createdAt: "desc" }],
-  });
+  query = query
+    .order("year", { ascending: false })
+    .order("month", { ascending: false })
+    .order("created_at", { ascending: false });
 
-  return NextResponse.json({ payrolls });
+  const { data: payrollsRaw, error } = await query;
+  if (error) {
+    return NextResponse.json({ error: "Failed to fetch payrolls" }, { status: 500 });
+  }
+
+  const payrolls = (payrollsRaw || []) as Array<Record<string, unknown>>;
+  return NextResponse.json({ payrolls: payrolls.map((p) => toCamelCase(p)) });
 }
 
 // POST /api/hr/payroll — generate payroll for a staff or all
@@ -97,18 +102,25 @@ export async function POST(req: Request) {
     }
 
     // Gather target staff list
-    const staffWhere: { schoolId: string; status?: string; id?: string } = {
-      schoolId: user.schoolId,
-    };
-    // Optionally include inactive staff — but default to all staff in school
+    let staffQuery = supabaseAdmin
+      .from("staff")
+      .select("id, salary, employee_id")
+      .eq("school_id", user.schoolId);
+
     if (staffId) {
-      staffWhere.id = staffId;
+      staffQuery = staffQuery.eq("id", staffId);
     }
 
-    const staffList = await db.staff.findMany({
-      where: staffWhere,
-      select: { id: true, salary: true, employeeId: true },
-    });
+    const { data: staffListRaw, error: staffError } = await staffQuery;
+    if (staffError) {
+      return NextResponse.json({ error: "Failed to fetch staff" }, { status: 500 });
+    }
+
+    const staffList = (staffListRaw || []) as Array<{
+      id: string;
+      salary: number;
+      employee_id: string;
+    }>;
 
     if (staffList.length === 0) {
       return NextResponse.json(
@@ -118,15 +130,18 @@ export async function POST(req: Request) {
     }
 
     // Determine which staff already have a payroll for this month/year
-    const existing = await db.payroll.findMany({
-      where: {
-        staffId: { in: staffList.map((s) => s.id) },
-        month,
-        year,
-      },
-      select: { staffId: true },
-    });
-    const existingSet = new Set(existing.map((e) => e.staffId));
+    const { data: existingRaw } = await supabaseAdmin
+      .from("payrolls")
+      .select("staff_id")
+      .in(
+        "staff_id",
+        staffList.map((s) => s.id)
+      )
+      .eq("month", month)
+      .eq("year", year);
+
+    const existing = (existingRaw || []) as Array<{ staff_id: string }>;
+    const existingSet = new Set(existing.map((e) => e.staff_id));
     const newStaff = staffList.filter((s) => !existingSet.has(s.id));
 
     if (newStaff.length === 0) {
@@ -138,24 +153,33 @@ export async function POST(req: Request) {
     }
 
     const toCreate = newStaff.map((s) => {
-      const basic = s.salary || 0;
+      const basic = Number(s.salary) || 0;
       const allowances = Math.round(basic * 0.2 * 100) / 100;
       const deductions = Math.round(basic * 0.12 * 100) / 100;
       const net = Math.round((basic + allowances - deductions) * 100) / 100;
       return {
-        staffId: s.id,
+        staff_id: s.id,
         month,
         year,
-        basicSalary: basic,
+        basic_salary: basic,
         allowances,
         deductions,
-        netSalary: net,
-        status: "pending" as const,
-        paidDate: null,
+        net_salary: net,
+        status: "pending",
+        paid_date: null,
       };
     });
 
-    await db.payroll.createMany({ data: toCreate });
+    const { error: insertError } = await supabaseAdmin
+      .from("payrolls")
+      .insert(toCreate);
+
+    if (insertError) {
+      return NextResponse.json(
+        { error: insertError.message },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json({
       generated: toCreate.length,

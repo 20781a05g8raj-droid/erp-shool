@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // GET /api/subjects — list subjects for the school (with optional ?classId= filter)
@@ -15,30 +15,55 @@ export async function GET(req: NextRequest) {
 
   if (classId) {
     // Validate class belongs to school
-    const cls = await db.class.findFirst({
-      where: { id: classId, schoolId: user.schoolId },
-      select: { id: true },
-    });
+    const { data: cls } = await supabaseAdmin
+      .from("classes")
+      .select("id")
+      .eq("id", classId)
+      .eq("school_id", user.schoolId)
+      .maybeSingle();
     if (!cls) {
       return NextResponse.json({ error: "Class not found" }, { status: 404 });
     }
 
-    const classSubjects = await db.classSubject.findMany({
-      where: { classId },
-      include: { subject: { select: { id: true, name: true, code: true } } },
-      orderBy: { subject: { name: "asc" } },
-    });
+    const { data: classSubjects, error } = await supabaseAdmin
+      .from("class_subjects")
+      .select("subject:subjects(id, name, code)")
+      .eq("class_id", classId)
+      .order("name", { referencedTable: "subjects", ascending: true });
 
-    return NextResponse.json({
-      subjects: classSubjects.map((cs) => cs.subject),
-    });
+    if (error) {
+      return NextResponse.json(
+        { error: "Failed to fetch subjects" },
+        { status: 500 }
+      );
+    }
+
+    const subjects = (classSubjects || [])
+      .map((cs) =>
+        toCamelCase(cs as unknown as Record<string, unknown>)
+      )
+      .map((cs) => (cs as { subject?: unknown } | null)?.subject)
+      .filter(Boolean);
+
+    return NextResponse.json({ subjects });
   }
 
-  const subjects = await db.subject.findMany({
-    where: { schoolId: user.schoolId },
-    orderBy: { name: "asc" },
-    select: { id: true, name: true, code: true },
-  });
+  const { data: subjects, error } = await supabaseAdmin
+    .from("subjects")
+    .select("id, name, code")
+    .eq("school_id", user.schoolId)
+    .order("name", { ascending: true });
 
-  return NextResponse.json({ subjects });
+  if (error) {
+    return NextResponse.json(
+      { error: "Failed to fetch subjects" },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({
+    subjects: (subjects || []).map((s) =>
+      toCamelCase(s as unknown as Record<string, unknown>)
+    ),
+  });
 }

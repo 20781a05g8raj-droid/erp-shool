@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 import { canManageStaff } from "@/lib/permissions";
 
@@ -19,23 +19,39 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const staff = await db.staff.findFirst({
-    where: { id, schoolId: user.schoolId },
-    include: {
-      leaves: {
-        orderBy: { createdAt: "desc" },
-        take: 50,
-      },
-      payrolls: {
-        orderBy: [{ year: "desc" }, { month: "desc" }],
-        take: 24,
-      },
-    },
-  });
+  const [
+    { data: staffRaw },
+    { data: leavesRaw },
+    { data: payrollsRaw },
+  ] = await Promise.all([
+    supabaseAdmin
+      .from("staff")
+      .select("*")
+      .eq("id", id)
+      .eq("school_id", user.schoolId)
+      .maybeSingle(),
+    supabaseAdmin
+      .from("staff_leaves")
+      .select("*")
+      .eq("staff_id", id)
+      .order("created_at", { ascending: false })
+      .limit(50),
+    supabaseAdmin
+      .from("payrolls")
+      .select("*")
+      .eq("staff_id", id)
+      .order("year", { ascending: false })
+      .order("month", { ascending: false })
+      .limit(24),
+  ]);
 
-  if (!staff) {
+  if (!staffRaw) {
     return NextResponse.json({ error: "Staff not found" }, { status: 404 });
   }
+
+  const staff: any = staffRaw;
+  const leaves: any[] = (leavesRaw ?? []) as any[];
+  const payrolls: any[] = (payrollsRaw ?? []) as any[];
 
   // Compute leave + payroll summary
   const now = new Date();
@@ -44,36 +60,38 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
   const today = now.toISOString().split("T")[0];
 
   const leaveSummary = {
-    total: staff.leaves.length,
-    approved: staff.leaves.filter((l) => l.status === "approved").length,
-    pending: staff.leaves.filter((l) => l.status === "pending").length,
-    rejected: staff.leaves.filter((l) => l.status === "rejected").length,
-    onLeaveToday: staff.leaves.some(
+    total: leaves.length,
+    approved: leaves.filter((l) => l.status === "approved").length,
+    pending: leaves.filter((l) => l.status === "pending").length,
+    rejected: leaves.filter((l) => l.status === "rejected").length,
+    onLeaveToday: leaves.some(
       (l) =>
-        l.status === "approved" && l.fromDate <= today && l.toDate >= today
+        l.status === "approved" && l.from_date <= today && l.to_date >= today
     ),
   };
 
-  const currentPayroll = staff.payrolls.find(
+  const currentPayroll = payrolls.find(
     (p) => p.month === currentMonth && p.year === currentYear
   );
 
   const payrollSummary = {
-    totalGenerated: staff.payrolls.length,
-    totalPaid: staff.payrolls.filter((p) => p.status === "paid").length,
-    totalNetSalary: staff.payrolls.reduce((s, p) => s + p.netSalary, 0),
+    totalGenerated: payrolls.length,
+    totalPaid: payrolls.filter((p) => p.status === "paid").length,
+    totalNetSalary: payrolls.reduce((s, p) => s + Number(p.net_salary ?? 0), 0),
     currentMonthPayroll: currentPayroll
       ? {
           id: currentPayroll.id,
           status: currentPayroll.status,
-          netSalary: currentPayroll.netSalary,
-          paidDate: currentPayroll.paidDate,
+          netSalary: Number(currentPayroll.net_salary ?? 0),
+          paidDate: currentPayroll.paid_date,
         }
       : null,
   };
 
   return NextResponse.json({
-    ...staff,
+    ...toCamelCase(staff),
+    leaves: leaves.map((l) => toCamelCase(l)),
+    payrolls: payrolls.map((p) => toCamelCase(p)),
     leaveSummary,
     payrollSummary,
   });
@@ -90,10 +108,12 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   }
 
   const { id } = await params;
-  const existing = await db.staff.findFirst({
-    where: { id, schoolId: user.schoolId },
-    select: { id: true, employeeId: true },
-  });
+  const { data: existing } = await supabaseAdmin
+    .from("staff")
+    .select("id, employee_id")
+    .eq("id", id)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
   if (!existing) {
     return NextResponse.json({ error: "Staff not found" }, { status: 404 });
   }
@@ -121,13 +141,17 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
     );
   }
 
-  // If employeeId changed, ensure global uniqueness
+  // If employeeId changed, ensure uniqueness (within school)
   const newEmployeeId = (body.employeeId || "").trim();
-  if (newEmployeeId && newEmployeeId !== existing.employeeId) {
-    const conflict = await db.staff.findUnique({
-      where: { employeeId: newEmployeeId },
-      select: { id: true },
-    });
+  if (newEmployeeId && newEmployeeId !== existing.employee_id) {
+    const { data: conflict } = await supabaseAdmin
+      .from("staff")
+      .select("id")
+      .eq("school_id", user.schoolId)
+      .eq("employee_id", newEmployeeId)
+      .neq("id", id)
+      .limit(1)
+      .maybeSingle();
     if (conflict) {
       return NextResponse.json(
         { error: "Employee ID already exists" },
@@ -142,27 +166,38 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
       : parseFloat(body.salary) || 0;
 
   try {
-    const updated = await db.staff.update({
-      where: { id },
-      data: {
-        employeeId: newEmployeeId || existing.employeeId,
-        firstName: body.firstName.trim(),
-        lastName: body.lastName.trim(),
-        email: body.email?.trim() || null,
-        phone: body.phone?.trim() || null,
-        dob: body.dob || null,
-        gender: body.gender || null,
-        designation: body.designation?.trim() || null,
-        department: body.department?.trim() || null,
-        qualification: body.qualification?.trim() || null,
-        joiningDate: body.joiningDate || null,
-        type: body.type === "non_teaching" ? "non_teaching" : "teaching",
-        photo: body.photo?.trim() || null,
-        salary,
-        status: body.status || "active",
-      },
-    });
-    return NextResponse.json(updated);
+    const updateData = {
+      employee_id: newEmployeeId || existing.employee_id,
+      first_name: body.firstName.trim(),
+      last_name: body.lastName.trim(),
+      email: body.email?.trim() || null,
+      phone: body.phone?.trim() || null,
+      dob: body.dob || null,
+      gender: body.gender || null,
+      designation: body.designation?.trim() || null,
+      department: body.department?.trim() || null,
+      qualification: body.qualification?.trim() || null,
+      joining_date: body.joiningDate || null,
+      type: body.type === "non_teaching" ? "non_teaching" : "teaching",
+      photo: body.photo?.trim() || null,
+      salary,
+      status: body.status || "active",
+    };
+
+    const { data, error } = await supabaseAdmin
+      .from("staff")
+      .update(updateData)
+      .eq("id", id)
+      .select("*")
+      .single();
+
+    if (error || !data) {
+      return NextResponse.json(
+        { error: error?.message || "Failed to update staff" },
+        { status: 500 }
+      );
+    }
+    return NextResponse.json(toCamelCase(data));
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Failed to update staff";
@@ -170,7 +205,7 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   }
 }
 
-// DELETE /api/staff/[id] — remove staff (cascade handled by Prisma onDelete)
+// DELETE /api/staff/[id] — remove staff (cascade handled by FK ON DELETE CASCADE)
 export async function DELETE(_req: NextRequest, { params }: RouteParams) {
   const user = await getCurrentUser();
   if (!user || !user.schoolId) {
@@ -181,16 +216,21 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams) {
   }
 
   const { id } = await params;
-  const existing = await db.staff.findFirst({
-    where: { id, schoolId: user.schoolId },
-    select: { id: true },
-  });
+  const { data: existing } = await supabaseAdmin
+    .from("staff")
+    .select("id")
+    .eq("id", id)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
   if (!existing) {
     return NextResponse.json({ error: "Staff not found" }, { status: 404 });
   }
 
   try {
-    await db.staff.delete({ where: { id } });
+    const { error } = await supabaseAdmin.from("staff").delete().eq("id", id);
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
     const message =

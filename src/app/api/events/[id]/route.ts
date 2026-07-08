@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 import type { Role } from "@/types";
 
@@ -18,11 +18,14 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   }
 
   const { id } = await params;
-  const existing = await db.schoolEvent.findFirst({
-    where: { id, schoolId: user.schoolId },
-    select: { id: true },
-  });
-  if (!existing) {
+  const { data: existing, error: existError } = await supabaseAdmin
+    .from("school_events")
+    .select("id")
+    .eq("id", id)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
+
+  if (existError || !existing) {
     return NextResponse.json({ error: "Event not found" }, { status: 404 });
   }
 
@@ -38,22 +41,36 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "Invalid event type" }, { status: 400 });
   }
   if (body.endDate && body.date && body.endDate < body.date) {
-    return NextResponse.json({ error: "End date cannot be before start date" }, { status: 400 });
+    return NextResponse.json(
+      { error: "End date cannot be before start date" },
+      { status: 400 }
+    );
   }
 
   const data: Record<string, unknown> = {};
   if (body.title !== undefined) data.title = body.title.trim();
   if (body.description !== undefined) data.description = body.description?.trim() || null;
   if (body.date !== undefined) data.date = body.date;
-  if (body.endDate !== undefined) data.endDate = body.endDate || null;
+  if (body.endDate !== undefined) data.end_date = body.endDate || null;
   if (body.type !== undefined) data.type = body.type;
 
   try {
-    const updated = await db.schoolEvent.update({
-      where: { id },
-      data,
-    });
-    return NextResponse.json(updated);
+    const { data: updatedRaw, error: updateError } = await supabaseAdmin
+      .from("school_events")
+      .update(data)
+      .eq("id", id)
+      .select("*")
+      .single();
+
+    if (updateError || !updatedRaw) {
+      return NextResponse.json(
+        { error: updateError?.message || "Failed to update event" },
+        { status: 500 }
+      );
+    }
+    return NextResponse.json(
+      toCamelCase(updatedRaw as Record<string, unknown>)
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to update event";
     return NextResponse.json({ error: message }, { status: 500 });
@@ -73,16 +90,25 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams) {
   }
 
   const { id } = await params;
-  const existing = await db.schoolEvent.findFirst({
-    where: { id, schoolId: user.schoolId },
-    select: { id: true },
-  });
-  if (!existing) {
+  const { data: existing, error: existError } = await supabaseAdmin
+    .from("school_events")
+    .select("id")
+    .eq("id", id)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
+
+  if (existError || !existing) {
     return NextResponse.json({ error: "Event not found" }, { status: 404 });
   }
 
   try {
-    await db.schoolEvent.delete({ where: { id } });
+    const { error: deleteError } = await supabaseAdmin
+      .from("school_events")
+      .delete()
+      .eq("id", id);
+    if (deleteError) {
+      return NextResponse.json({ error: deleteError.message }, { status: 500 });
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to delete event";

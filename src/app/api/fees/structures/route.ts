@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // GET — list fee structures with items + class
@@ -9,17 +9,34 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const structures = await db.feeStructure.findMany({
-    where: { schoolId: user.schoolId },
-    include: {
-      class: true,
-      items: true,
-      _count: { select: { studentFees: true } },
-    },
-    orderBy: { createdAt: "desc" },
-  });
+  const { data: structuresRaw, error } = await supabaseAdmin
+    .from("fee_structures")
+    .select("*, classes(*), fee_items(*)")
+    .eq("school_id", user.schoolId)
+    .order("created_at", { ascending: false });
 
-  return NextResponse.json({ structures });
+  if (error) {
+    return NextResponse.json(
+      { error: "Failed to fetch fee structures" },
+      { status: 500 }
+    );
+  }
+
+  // Compute studentFees count for each structure
+  const structures = await Promise.all(
+    (structuresRaw || []).map(async (s: Record<string, unknown>) => {
+      const { count } = await supabaseAdmin
+        .from("student_fees")
+        .select("*", { count: "exact", head: true })
+        .eq("fee_structure_id", s.id as string);
+      s._count = { studentFees: count || 0 };
+      return s;
+    })
+  );
+
+  return NextResponse.json({
+    structures: toCamelCase(structures as Record<string, unknown>[]),
+  });
 }
 
 // POST — create fee structure with items
@@ -54,21 +71,44 @@ export async function POST(req: Request) {
 
     const totalAmount = cleanItems.reduce((sum, it) => sum + it.amount, 0);
 
-    const structure = await db.feeStructure.create({
-      data: {
+    const { data: structure, error: createError } = await supabaseAdmin
+      .from("fee_structures")
+      .insert({
         name,
-        classId: classId || null,
-        schoolId: user.schoolId,
+        class_id: classId || null,
+        school_id: user.schoolId,
         term,
-        dueDate: dueDate || null,
-        totalAmount,
-        items:
-          cleanItems.length > 0 ? { create: cleanItems } : undefined,
-      },
-      include: { items: true, class: true },
-    });
+        due_date: dueDate || null,
+        total_amount: totalAmount,
+      })
+      .select("*, classes(*), fee_items(*)")
+      .single();
 
-    return NextResponse.json({ structure }, { status: 201 });
+    if (createError || !structure) {
+      return NextResponse.json(
+        { error: "Failed to create fee structure" },
+        { status: 500 }
+      );
+    }
+
+    // Create items if any
+    if (cleanItems.length > 0) {
+      const itemRows = cleanItems.map((it) => ({
+        fee_structure_id: structure.id,
+        name: it.name,
+        amount: it.amount,
+      }));
+      const { data: insertedItems } = await supabaseAdmin
+        .from("fee_items")
+        .insert(itemRows)
+        .select("*");
+      structure.fee_items = insertedItems || [];
+    }
+
+    return NextResponse.json(
+      { structure: toCamelCase(structure as Record<string, unknown>) },
+      { status: 201 }
+    );
   } catch {
     return NextResponse.json(
       { error: "Failed to create fee structure" },

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // GET /api/reports/attendance — attendance summary by class, by month, overall rate
@@ -12,46 +12,78 @@ export async function GET() {
   const schoolId = user.schoolId;
 
   // Get all classes
-  const classes = await db.class.findMany({
-    where: { schoolId },
-    orderBy: { order: "asc" },
-    select: { id: true, name: true },
-  });
+  const { data: classesRaw } = await supabaseAdmin
+    .from("classes")
+    .select("id, name")
+    .eq("school_id", schoolId)
+    .order("order", { ascending: true });
+
+  const classes = (classesRaw || []) as Array<{ id: string; name: string }>;
+
+  // Get all student IDs in the school
+  const { data: schoolStudentsRaw } = await supabaseAdmin
+    .from("students")
+    .select("id, class_id")
+    .eq("school_id", schoolId);
+
+  const schoolStudents = (schoolStudentsRaw || []) as Array<{
+    id: string;
+    class_id: string | null;
+  }>;
+  const studentClassMap = new Map<string, string | null>();
+  for (const s of schoolStudents) {
+    studentClassMap.set(s.id, s.class_id);
+  }
 
   // Get all attendance records for the school (last 6 months for trend + class breakdown)
   const now = new Date();
   const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1);
-  const startPrefix = `${sixMonthsAgo.getFullYear()}-${String(sixMonthsAgo.getMonth() + 1).padStart(2, "0")}`;
+  const startPrefix = `${sixMonthsAgo.getFullYear()}-${String(
+    sixMonthsAgo.getMonth() + 1
+  ).padStart(2, "0")}`;
 
-  const attendanceRecords = await db.studentAttendance.findMany({
-    where: {
-      date: { gte: startPrefix },
-      student: { schoolId },
-    },
-    select: {
-      status: true,
-      date: true,
-      student: { select: { classId: true } },
-    },
-  });
+  const studentIds = schoolStudents.map((s) => s.id);
+  let attendanceRecords: Array<{
+    status: string;
+    date: string;
+    student_id: string;
+  }> = [];
+
+  if (studentIds.length > 0) {
+    const { data: attRaw } = await supabaseAdmin
+      .from("student_attendance")
+      .select("status, date, student_id")
+      .in("student_id", studentIds)
+      .gte("date", startPrefix);
+    attendanceRecords = (attRaw || []) as Array<{
+      status: string;
+      date: string;
+      student_id: string;
+    }>;
+  }
 
   // Overall rate
   const totalRecords = attendanceRecords.length;
   const presentRecords = attendanceRecords.filter(
     (r) => r.status === "present" || r.status === "late"
   ).length;
-  const overallRate = totalRecords > 0 ? Math.round((presentRecords / totalRecords) * 100) : 0;
+  const overallRate =
+    totalRecords > 0 ? Math.round((presentRecords / totalRecords) * 100) : 0;
 
   // By class
-  const classMap: Record<string, { name: string; total: number; present: number }> = {};
+  const classMap: Record<
+    string,
+    { name: string; total: number; present: number }
+  > = {};
   for (const cls of classes) {
     classMap[cls.id] = { name: cls.name, total: 0, present: 0 };
   }
   for (const r of attendanceRecords) {
-    const entry = r.student.classId ? classMap[r.student.classId] : null;
-    if (entry) {
-      entry.total += 1;
-      if (r.status === "present" || r.status === "late") entry.present += 1;
+    const cid = studentClassMap.get(r.student_id);
+    if (cid && classMap[cid]) {
+      classMap[cid].total += 1;
+      if (r.status === "present" || r.status === "late")
+        classMap[cid].present += 1;
     }
   }
   const byClass = Object.values(classMap).map((c) => ({
@@ -62,12 +94,19 @@ export async function GET() {
   }));
 
   // By month (last 6 months)
-  const byMonth: { month: string; rate: number; total: number; present: number }[] = [];
+  const byMonth: {
+    month: string;
+    rate: number;
+    total: number;
+    present: number;
+  }[] = [];
   for (let i = 5; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const prefix = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
     const monthName = d.toLocaleDateString("en-IN", { month: "short" });
-    const monthRecords = attendanceRecords.filter((r) => r.date.startsWith(prefix));
+    const monthRecords = attendanceRecords.filter((r) =>
+      r.date.startsWith(prefix)
+    );
     const monthTotal = monthRecords.length;
     const monthPresent = monthRecords.filter(
       (r) => r.status === "present" || r.status === "late"

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 import type { Role } from "@/types";
 
@@ -24,64 +24,70 @@ export async function GET(req: NextRequest) {
   const roleFilter = searchParams.get("role");
   const search = searchParams.get("search")?.trim();
 
-  const profiles = await db.profile.findMany({
-    where: {
-      schoolId,
-      ...(roleFilter ? { role: roleFilter } : {}),
-      ...(search
-        ? {
-            OR: [
-              { name: { contains: search, mode: "insensitive" } },
-              { email: { contains: search, mode: "insensitive" } },
-            ],
-          }
-        : {}),
-    },
-    orderBy: [{ role: "asc" }, { name: "asc" }],
-    select: {
-      id: true,
-      email: true,
-      name: true,
-      role: true,
-      phone: true,
-      avatar: true,
-      status: true,
-      studentId: true,
-      staffId: true,
-      createdAt: true,
-    },
-  });
+  let query = supabaseAdmin
+    .from("profiles")
+    .select(`
+      id, email, name, role, phone, avatar, status,
+      student_id, staff_id, created_at
+    `)
+    .eq("school_id", schoolId)
+    .order("role", { ascending: true })
+    .order("name", { ascending: true });
 
-  // For each profile, fetch linked student/staff info
+  if (roleFilter) {
+    query = query.eq("role", roleFilter);
+  }
+  if (search) {
+    const orClause = [
+      `name.ilike.%${search}%`,
+      `email.ilike.%${search}%`,
+    ].join(",");
+    query = query.or(orClause);
+  }
+
+  const { data: profilesRaw, error } = await query;
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  const profiles: any[] = (profilesRaw ?? []) as any[];
+
+  // For each profile, fetch linked student/staff info (in parallel)
   const enriched = await Promise.all(
     profiles.map(async (p) => {
       let linkedInfo: { type: string; name: string; extra?: string } | null = null;
-      if (p.studentId) {
-        const stu = await db.student.findUnique({
-          where: { id: p.studentId },
-          select: { firstName: true, lastName: true, admissionNumber: true, class: { select: { name: true } } },
-        });
+      if (p.student_id) {
+        const { data: stu } = await supabaseAdmin
+          .from("students")
+          .select("first_name, last_name, admission_number, classes(name)")
+          .eq("id", p.student_id)
+          .maybeSingle();
         if (stu) {
+          const classRow = Array.isArray(stu.classes) && stu.classes.length > 0
+            ? (stu.classes[0] as any)
+            : (stu.classes as any);
+          const className = classRow?.name ?? null;
           linkedInfo = {
             type: "student",
-            name: `${stu.firstName} ${stu.lastName}`,
-            extra: `${stu.admissionNumber} · ${stu.class?.name || "—"}`,
+            name: `${stu.first_name} ${stu.last_name}`,
+            extra: `${stu.admission_number} · ${className || "—"}`,
           };
         }
-      } else if (p.staffId) {
-        const stf = await db.staff.findUnique({
-          where: { id: p.staffId },
-          select: { firstName: true, lastName: true, employeeId: true, designation: true },
-        });
+      } else if (p.staff_id) {
+        const { data: stf } = await supabaseAdmin
+          .from("staff")
+          .select("first_name, last_name, employee_id, designation")
+          .eq("id", p.staff_id)
+          .maybeSingle();
         if (stf) {
           linkedInfo = {
             type: "staff",
-            name: `${stf.firstName} ${stf.lastName}`,
-            extra: `${stf.employeeId} · ${stf.designation || "—"}`,
+            name: `${stf.first_name} ${stf.last_name}`,
+            extra: `${stf.employee_id} · ${stf.designation || "—"}`,
           };
         }
       }
-      return { ...p, linkedInfo };
+      return { ...toCamelCase(p), linkedInfo };
     })
   );
 
@@ -123,30 +129,47 @@ export async function POST(req: NextRequest) {
     const normalizedEmail = email.toLowerCase().trim();
 
     // Check uniqueness
-    const existing = await db.profile.findUnique({ where: { email: normalizedEmail } });
+    const { data: existing } = await supabaseAdmin
+      .from("profiles")
+      .select("id")
+      .eq("email", normalizedEmail)
+      .limit(1)
+      .maybeSingle();
     if (existing) {
       return NextResponse.json({ error: "Email already in use" }, { status: 400 });
     }
 
-    const profile = await db.profile.create({
-      data: {
+    // Generate a UUID for the new profile (profiles.id auto-defaults to uuid_generate_v4(),
+    // but we pass an explicit one to be safe across all schema versions.)
+    const { v4: uuidv4 } = await import("uuid");
+    const profileId = uuidv4();
+
+    const { data, error } = await supabaseAdmin
+      .from("profiles")
+      .insert({
+        id: profileId,
         email: normalizedEmail,
         password: `demo:${password}`,
         name: name.trim(),
         role,
         phone: phone?.trim() || null,
-        studentId: studentId || null,
-        staffId: staffId || null,
+        student_id: studentId || null,
+        staff_id: staffId || null,
         status: status || "active",
-        schoolId: user.schoolId,
-      },
-      select: {
-        id: true, email: true, name: true, role: true,
-        phone: true, status: true, studentId: true, staffId: true, createdAt: true,
-      },
-    });
+        school_id: user.schoolId,
+      })
+      .select(`
+        id, email, name, role, phone, status,
+        student_id, staff_id, created_at
+      `)
+      .single();
 
-    return NextResponse.json({ user: profile }, { status: 201 });
+    if (error || !data) {
+      console.error("Create user error:", error);
+      return NextResponse.json({ error: "Failed to create user" }, { status: 500 });
+    }
+
+    return NextResponse.json({ user: toCamelCase(data) }, { status: 201 });
   } catch (error) {
     console.error("Create user error:", error);
     return NextResponse.json({ error: "Failed to create user" }, { status: 500 });

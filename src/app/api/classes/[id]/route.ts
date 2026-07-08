@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 type RouteParams = { params: Promise<{ id: string }> };
@@ -13,9 +13,12 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
 
   const { id } = await params;
 
-  const existing = await db.class.findFirst({
-    where: { id, schoolId: user.schoolId },
-  });
+  const { data: existing } = await supabaseAdmin
+    .from("classes")
+    .select("id")
+    .eq("id", id)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
   if (!existing) {
     return NextResponse.json({ error: "Class not found" }, { status: 404 });
   }
@@ -27,21 +30,31 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const data: { name?: string; order?: number } = {};
+  const updateData: Record<string, unknown> = {};
   if (typeof body.name === "string" && body.name.trim()) {
-    data.name = body.name.trim();
+    updateData.name = body.name.trim();
   }
   if (typeof body.order === "number" && !Number.isNaN(body.order)) {
-    data.order = body.order;
+    updateData.order = body.order;
   }
 
-  const updated = await db.class.update({
-    where: { id },
-    data,
-  });
+  const { data, error } = await supabaseAdmin
+    .from("classes")
+    .update(updateData)
+    .eq("id", id)
+    .select("id, name, \"order\"")
+    .single();
+
+  if (error || !data) {
+    return NextResponse.json({ error: error?.message || "Failed to update class" }, { status: 500 });
+  }
 
   return NextResponse.json({
-    class: { id: updated.id, name: updated.name, order: updated.order },
+    class: {
+      id: data.id,
+      name: (data as any).name,
+      order: (data as any).order,
+    },
   });
 }
 
@@ -54,14 +67,20 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams) {
 
   const { id } = await params;
 
-  const existing = await db.class.findFirst({
-    where: { id, schoolId: user.schoolId },
-  });
+  const { data: existing } = await supabaseAdmin
+    .from("classes")
+    .select("id")
+    .eq("id", id)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
   if (!existing) {
     return NextResponse.json({ error: "Class not found" }, { status: 404 });
   }
 
-  await db.class.delete({ where: { id } });
+  const { error } = await supabaseAdmin.from("classes").delete().eq("id", id);
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 
   return NextResponse.json({ success: true });
 }

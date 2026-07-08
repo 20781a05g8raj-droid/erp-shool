@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 type RouteParams = { params: Promise<{ id: string }> };
@@ -17,16 +17,20 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   const { id } = await params;
   const body = await req.json().catch(() => ({}));
 
-  const issue = await db.bookIssue.findFirst({
-    where: { id, book: { schoolId: user.schoolId } },
-    include: {
-      book: { select: { id: true, title: true, schoolId: true } },
-    },
-  });
-  if (!issue) {
-    return NextResponse.json({ error: "Issue record not found" }, { status: 404 });
+  const { data: issue, error: issueError } = await supabaseAdmin
+    .from("book_issues")
+    .select("*, books!inner(id, school_id, title)")
+    .eq("id", id)
+    .eq("books.school_id", user.schoolId)
+    .maybeSingle();
+
+  if (issueError || !issue) {
+    return NextResponse.json(
+      { error: "Issue record not found" },
+      { status: 404 }
+    );
   }
-  if (issue.status === "returned") {
+  if ((issue.status as string) === "returned") {
     return NextResponse.json(
       { error: "Book already returned" },
       { status: 400 }
@@ -40,7 +44,7 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
 
   const returnDate = new Date(returnDateStr);
   returnDate.setHours(0, 0, 0, 0);
-  const due = new Date(issue.dueDate);
+  const due = new Date(issue.due_date as string);
   due.setHours(0, 0, 0, 0);
 
   let fine = 0;
@@ -52,42 +56,44 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   }
 
   try {
-    const [updated] = await db.$transaction([
-      db.bookIssue.update({
-        where: { id },
-        data: {
-          returnDate: returnDateStr,
-          status: "returned",
-          fine,
-        },
-        include: {
-          book: {
-            select: {
-              id: true,
-              title: true,
-              author: true,
-              isbn: true,
-              category: true,
-            },
-          },
-          student: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              admissionNumber: true,
-              class: { select: { id: true, name: true } },
-              section: { select: { id: true, name: true } },
-            },
-          },
-        },
-      }),
-      db.libraryBook.update({
-        where: { id: issue.bookId },
-        data: { availableCopies: { increment: 1 } },
-      }),
-    ]);
-    return NextResponse.json(updated);
+    const { data: updated, error: updateError } = await supabaseAdmin
+      .from("book_issues")
+      .update({
+        return_date: returnDateStr,
+        status: "returned",
+        fine,
+      })
+      .eq("id", id)
+      .select(
+        "*, books(id, title, author, isbn, category), students(id, first_name, last_name, admission_number, classes(id, name), sections(id, name))"
+      )
+      .single();
+
+    if (updateError || !updated) {
+      return NextResponse.json(
+        { error: "Failed to return book" },
+        { status: 500 }
+      );
+    }
+
+    // Increment available_copies
+    const { data: book } = await supabaseAdmin
+      .from("library_books")
+      .select("available_copies")
+      .eq("id", issue.book_id as string)
+      .maybeSingle();
+
+    if (book) {
+      const newAvailable = (book.available_copies as number) + 1;
+      await supabaseAdmin
+        .from("library_books")
+        .update({ available_copies: newAvailable })
+        .eq("id", issue.book_id as string);
+    }
+
+    return NextResponse.json(
+      toCamelCase(updated as Record<string, unknown>)
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to return book";
     return NextResponse.json({ error: message }, { status: 500 });
@@ -103,25 +109,49 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams) {
   }
 
   const { id } = await params;
-  const issue = await db.bookIssue.findFirst({
-    where: { id, book: { schoolId: user.schoolId } },
-    select: { id: true, bookId: true, status: true },
-  });
-  if (!issue) {
-    return NextResponse.json({ error: "Issue record not found" }, { status: 404 });
+  const { data: issue, error: issueError } = await supabaseAdmin
+    .from("book_issues")
+    .select("id, book_id, status, books!inner(school_id)")
+    .eq("id", id)
+    .eq("books.school_id", user.schoolId)
+    .maybeSingle();
+
+  if (issueError || !issue) {
+    return NextResponse.json(
+      { error: "Issue record not found" },
+      { status: 404 }
+    );
   }
 
   try {
-    if (issue.status !== "returned") {
-      await db.libraryBook.update({
-        where: { id: issue.bookId },
-        data: { availableCopies: { increment: 1 } },
-      });
+    if ((issue.status as string) !== "returned") {
+      const { data: book } = await supabaseAdmin
+        .from("library_books")
+        .select("available_copies")
+        .eq("id", issue.book_id as string)
+        .maybeSingle();
+      if (book) {
+        const newAvailable = (book.available_copies as number) + 1;
+        await supabaseAdmin
+          .from("library_books")
+          .update({ available_copies: newAvailable })
+          .eq("id", issue.book_id as string);
+      }
     }
-    await db.bookIssue.delete({ where: { id } });
+    const { error } = await supabaseAdmin
+      .from("book_issues")
+      .delete()
+      .eq("id", id);
+    if (error) {
+      return NextResponse.json(
+        { error: "Failed to delete issue record" },
+        { status: 500 }
+      );
+    }
     return NextResponse.json({ success: true });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to delete issue record";
+    const message =
+      err instanceof Error ? err.message : "Failed to delete issue record";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

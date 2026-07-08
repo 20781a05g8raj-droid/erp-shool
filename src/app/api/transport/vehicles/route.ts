@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // GET /api/transport/vehicles — list with route + student count
@@ -9,16 +9,32 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const vehicles = await db.vehicle.findMany({
-    where: { schoolId: user.schoolId },
-    orderBy: [{ createdAt: "desc" }],
-    include: {
-      route: { select: { id: true, name: true, fare: true } },
-      _count: { select: { studentTransport: true } },
-    },
-  });
+  const { data: vehiclesRaw, error } = await supabaseAdmin
+    .from("vehicles")
+    .select("*, transport_routes(id, name, fare)")
+    .eq("school_id", user.schoolId)
+    .order("created_at", { ascending: false });
 
-  return NextResponse.json(vehicles);
+  if (error) {
+    return NextResponse.json({ error: "Failed to fetch vehicles" }, { status: 500 });
+  }
+
+  // Compute student count for each vehicle
+  const vehicles = await Promise.all(
+    (vehiclesRaw || []).map(async (v: Record<string, unknown>) => {
+      const { count } = await supabaseAdmin
+        .from("student_transport")
+        .select("*", { count: "exact", head: true })
+        .eq("vehicle_id", v.id as string);
+      v._count = { studentTransport: count || 0 };
+      // Rename relation for camelCase mapping (transport_routes → route)
+      v.route = v.transport_routes;
+      delete v.transport_routes;
+      return v;
+    })
+  );
+
+  return NextResponse.json(toCamelCase(vehicles as Record<string, unknown>[]));
 }
 
 // POST /api/transport/vehicles — create vehicle
@@ -38,10 +54,12 @@ export async function POST(req: NextRequest) {
   }
 
   // busNumber uniqueness within school
-  const conflict = await db.vehicle.findFirst({
-    where: { schoolId: user.schoolId, busNumber: body.busNumber.trim() },
-    select: { id: true },
-  });
+  const { data: conflict } = await supabaseAdmin
+    .from("vehicles")
+    .select("id")
+    .eq("school_id", user.schoolId)
+    .eq("bus_number", body.busNumber.trim())
+    .maybeSingle();
   if (conflict) {
     return NextResponse.json(
       { error: "A vehicle with this bus number already exists" },
@@ -53,29 +71,44 @@ export async function POST(req: NextRequest) {
   // Validate routeId belongs to same school (if provided)
   let routeId: string | null = null;
   if (body.routeId) {
-    const route = await db.transportRoute.findFirst({
-      where: { id: body.routeId, schoolId: user.schoolId },
-      select: { id: true },
-    });
-    if (route) routeId = route.id;
+    const { data: route } = await supabaseAdmin
+      .from("transport_routes")
+      .select("id")
+      .eq("id", body.routeId)
+      .eq("school_id", user.schoolId)
+      .maybeSingle();
+    if (route) routeId = (route as { id: string }).id;
   }
 
   try {
-    const vehicle = await db.vehicle.create({
-      data: {
-        busNumber: body.busNumber.trim(),
-        driverName: body.driverName.trim(),
-        driverPhone: body.driverPhone?.trim() || "",
+    const { data: vehicle, error } = await supabaseAdmin
+      .from("vehicles")
+      .insert({
+        bus_number: body.busNumber.trim(),
+        driver_name: body.driverName.trim(),
+        driver_phone: body.driverPhone?.trim() || "",
         capacity,
-        routeId,
-        schoolId: user.schoolId,
-      },
-      include: {
-        route: { select: { id: true, name: true, fare: true } },
-        _count: { select: { studentTransport: true } },
-      },
-    });
-    return NextResponse.json(vehicle, { status: 201 });
+        route_id: routeId,
+        school_id: user.schoolId,
+      })
+      .select("*, transport_routes(id, name, fare)")
+      .single();
+
+    if (error || !vehicle) {
+      return NextResponse.json(
+        { error: "Failed to create vehicle" },
+        { status: 500 }
+      );
+    }
+
+    (vehicle as Record<string, unknown>)._count = { studentTransport: 0 };
+    (vehicle as Record<string, unknown>).route = (vehicle as Record<string, unknown>).transport_routes;
+    delete (vehicle as Record<string, unknown>).transport_routes;
+
+    return NextResponse.json(
+      toCamelCase(vehicle as Record<string, unknown>),
+      { status: 201 }
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create vehicle";
     return NextResponse.json({ error: message }, { status: 500 });

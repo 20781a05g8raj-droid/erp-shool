@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // GET /api/schools — super_admin only: list all schools with counts
@@ -9,33 +9,64 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const schools = await db.school.findMany({
-    orderBy: { createdAt: "desc" },
-    include: {
-      _count: {
-        select: {
-          students: true,
-          staff: true,
-          classes: true,
-        },
-      },
-    },
-  });
+  const { data: schoolsRaw, error } = await supabaseAdmin
+    .from("schools")
+    .select("*")
+    .order("created_at", { ascending: false });
 
-  // Compute fee revenue per school
+  if (error) {
+    return NextResponse.json({ error: "Failed to fetch schools" }, { status: 500 });
+  }
+
+  const schools = (schoolsRaw || []) as Array<Record<string, unknown>>;
+
+  // Compute counts + fee revenue per school
   const result = await Promise.all(
     schools.map(async (s) => {
-      const studentFees = await db.studentFee.findMany({
-        where: { student: { schoolId: s.id } },
-        select: { paidAmount: true, dueAmount: true, totalAmount: true },
-      });
-      const totalRevenue = studentFees.reduce((sum, f) => sum + f.paidAmount, 0);
-      const totalDue = studentFees.reduce((sum, f) => sum + f.dueAmount, 0);
-      const totalExpected = studentFees.reduce((sum, f) => sum + f.totalAmount, 0);
+      const schoolId = s.id as string;
+
+      const [studentsCountRes, staffCountRes, classesCountRes, studentFeesRes] =
+        await Promise.all([
+          supabaseAdmin
+            .from("students")
+            .select("*", { count: "exact", head: true })
+            .eq("school_id", schoolId),
+          supabaseAdmin
+            .from("staff")
+            .select("*", { count: "exact", head: true })
+            .eq("school_id", schoolId),
+          supabaseAdmin
+            .from("classes")
+            .select("*", { count: "exact", head: true })
+            .eq("school_id", schoolId),
+          supabaseAdmin
+            .from("student_fees")
+            .select("paid_amount, due_amount, total_amount, student:students(school_id)")
+            .eq("student.school_id", schoolId),
+        ]);
+
+      const studentFees = (studentFeesRes.data || []) as Array<{
+        paid_amount: number;
+        due_amount: number;
+        total_amount: number;
+      }>;
+      const totalRevenue = studentFees.reduce(
+        (sum, f) => sum + Number(f.paid_amount),
+        0
+      );
+      const totalDue = studentFees.reduce(
+        (sum, f) => sum + Number(f.due_amount),
+        0
+      );
+      const totalExpected = studentFees.reduce(
+        (sum, f) => sum + Number(f.total_amount),
+        0
+      );
 
       // Subscription badge heuristic: created within 30 days => Trial, else Active
       const ageDays = Math.floor(
-        (Date.now() - new Date(s.createdAt).getTime()) / (1000 * 60 * 60 * 24)
+        (Date.now() - new Date(s.created_at as string).getTime()) /
+          (1000 * 60 * 60 * 24)
       );
       const subscription = ageDays <= 30 ? "Trial" : "Active";
 
@@ -46,12 +77,12 @@ export async function GET() {
         phone: s.phone,
         email: s.email,
         logo: s.logo,
-        establishedDate: s.establishedDate,
-        createdAt: s.createdAt,
+        establishedDate: s.established_date,
+        createdAt: s.created_at,
         counts: {
-          students: s._count.students,
-          staff: s._count.staff,
-          classes: s._count.classes,
+          students: studentsCountRes.count || 0,
+          staff: staffCountRes.count || 0,
+          classes: classesCountRes.count || 0,
         },
         revenue: {
           total: Math.round(totalRevenue),
@@ -80,17 +111,31 @@ export async function POST(req: Request) {
   }
 
   try {
-    const school = await db.school.create({
-      data: {
-        name: body.name.trim(),
-        address: body.address?.trim() || null,
-        phone: body.phone?.trim() || null,
-        email: body.email?.trim() || null,
-        logo: body.logo?.trim() || null,
-        establishedDate: body.establishedDate || null,
-      },
-    });
-    return NextResponse.json(school, { status: 201 });
+    const insertRow = {
+      name: body.name.trim(),
+      address: body.address?.trim() || null,
+      phone: body.phone?.trim() || null,
+      email: body.email?.trim() || null,
+      logo: body.logo?.trim() || null,
+      established_date: body.establishedDate || null,
+    };
+
+    const { data: schoolRaw, error: insertError } = await supabaseAdmin
+      .from("schools")
+      .insert(insertRow)
+      .select("*")
+      .single();
+
+    if (insertError || !schoolRaw) {
+      return NextResponse.json(
+        { error: insertError?.message || "Failed to create school" },
+        { status: 500 }
+      );
+    }
+    return NextResponse.json(
+      toCamelCase(schoolRaw as Record<string, unknown>),
+      { status: 201 }
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create school";
     return NextResponse.json({ error: message }, { status: 500 });

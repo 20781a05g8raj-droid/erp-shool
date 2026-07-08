@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // GET /api/exams — list exams with class + result count
@@ -16,58 +16,82 @@ export async function GET(req: NextRequest) {
   let scopeClassId = classId || undefined;
   if (user.role === "student" || user.role === "parent") {
     if (user.studentId) {
-      const student = await db.student.findUnique({
-        where: { id: user.studentId },
-        select: { classId: true },
-      });
-      scopeClassId = student?.classId || undefined;
+      const { data: student } = await supabaseAdmin
+        .from("students")
+        .select("class_id")
+        .eq("id", user.studentId)
+        .maybeSingle();
+      scopeClassId = student?.class_id || undefined;
     } else {
       return NextResponse.json({ exams: [] });
     }
   }
 
-  const where: { schoolId: string; classId?: string } = { schoolId: user.schoolId };
-  if (scopeClassId) where.classId = scopeClassId;
+  let query = supabaseAdmin
+    .from("exams")
+    .select("*, class:classes(id, name)")
+    .eq("school_id", user.schoolId)
+    .order("created_at", { ascending: false });
 
-  const exams = await db.exam.findMany({
-    where,
-    orderBy: { createdAt: "desc" },
-    include: {
-      class: { select: { id: true, name: true } },
-      _count: { select: { results: true } },
-    },
-  });
+  if (scopeClassId) {
+    query = query.eq("class_id", scopeClassId);
+  }
 
-  // Compute unique student count per exam
-  const examIds = exams.map((e) => e.id);
-  const results = examIds.length
-    ? await db.examResult.findMany({
-        where: { examId: { in: examIds } },
-        select: { examId: true, studentId: true },
-        distinct: ["examId", "studentId"],
-      })
-    : [];
+  const { data: examsRaw, error } = await query;
+  if (error) {
+    return NextResponse.json({ error: "Failed to fetch exams" }, { status: 500 });
+  }
+  const exams = (examsRaw || []) as Array<Record<string, unknown>>;
 
-  const studentCountByExam = new Map<string, number>();
-  for (const r of results) {
-    studentCountByExam.set(r.examId, (studentCountByExam.get(r.examId) || 0) + 1);
+  const examIds = exams.map((e) => e.id as string);
+  let studentCountByExam = new Map<string, number>();
+  let resultCountByExam = new Map<string, number>();
+
+  if (examIds.length > 0) {
+    const { data: resultsRaw } = await supabaseAdmin
+      .from("exam_results")
+      .select("exam_id, student_id")
+      .in("exam_id", examIds);
+    const results = (resultsRaw || []) as Array<{
+      exam_id: string;
+      student_id: string;
+    }>;
+
+    const seen = new Set<string>();
+    for (const r of results) {
+      resultCountByExam.set(
+        r.exam_id,
+        (resultCountByExam.get(r.exam_id) || 0) + 1
+      );
+      const key = `${r.exam_id}|${r.student_id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        studentCountByExam.set(
+          r.exam_id,
+          (studentCountByExam.get(r.exam_id) || 0) + 1
+        );
+      }
+    }
   }
 
   return NextResponse.json({
-    exams: exams.map((e) => ({
-      id: e.id,
-      name: e.name,
-      type: e.type,
-      schoolId: e.schoolId,
-      classId: e.classId,
-      startDate: e.startDate,
-      endDate: e.endDate,
-      maxMarks: e.maxMarks,
-      createdAt: e.createdAt,
-      class: e.class,
-      resultCount: e._count.results,
-      studentCount: studentCountByExam.get(e.id) || 0,
-    })),
+    exams: exams.map((e) => {
+      const camel = toCamelCase(e) as Record<string, unknown>;
+      return {
+        id: camel.id,
+        name: camel.name,
+        type: camel.type,
+        schoolId: camel.schoolId,
+        classId: camel.classId,
+        startDate: camel.startDate,
+        endDate: camel.endDate,
+        maxMarks: camel.maxMarks,
+        createdAt: camel.createdAt,
+        class: camel.class,
+        resultCount: resultCountByExam.get(camel.id as string) || 0,
+        studentCount: studentCountByExam.get(camel.id as string) || 0,
+      };
+    }),
   });
 }
 
@@ -109,30 +133,43 @@ export async function POST(req: NextRequest) {
     }
 
     // Validate class belongs to school
-    const cls = await db.class.findFirst({
-      where: { id: classId, schoolId: user.schoolId },
-      select: { id: true },
-    });
-    if (!cls) {
+    const { data: cls, error: clsError } = await supabaseAdmin
+      .from("classes")
+      .select("id")
+      .eq("id", classId)
+      .eq("school_id", user.schoolId)
+      .maybeSingle();
+
+    if (clsError || !cls) {
       return NextResponse.json({ error: "Class not found" }, { status: 404 });
     }
 
-    const exam = await db.exam.create({
-      data: {
-        name: name.trim(),
-        type,
-        classId,
-        startDate,
-        endDate,
-        maxMarks: typeof maxMarks === "number" && maxMarks > 0 ? maxMarks : 100,
-        schoolId: user.schoolId,
-      },
-      include: {
-        class: { select: { id: true, name: true } },
-      },
-    });
+    const insertRow = {
+      name: name.trim(),
+      type,
+      class_id: classId,
+      start_date: startDate,
+      end_date: endDate,
+      max_marks: typeof maxMarks === "number" && maxMarks > 0 ? maxMarks : 100,
+      school_id: user.schoolId,
+    };
 
-    return NextResponse.json(exam, { status: 201 });
+    const { data: examRaw, error: insertError } = await supabaseAdmin
+      .from("exams")
+      .insert(insertRow)
+      .select("*, class:classes(id, name)")
+      .single();
+
+    if (insertError || !examRaw) {
+      return NextResponse.json(
+        { error: insertError?.message || "Failed to create exam" },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json(toCamelCase(examRaw as Record<string, unknown>), {
+      status: 201,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create exam";
     return NextResponse.json({ error: message }, { status: 500 });

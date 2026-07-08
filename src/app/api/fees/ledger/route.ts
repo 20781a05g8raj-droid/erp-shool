@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 function computeStatus(paid: number, total: number, dueDate: string | null): string {
@@ -33,120 +33,139 @@ export async function GET(req: Request) {
       : null;
 
   // Refresh overdue statuses based on due date (cheap pass)
-  const allFees = await db.studentFee.findMany({
-    where: { student: { schoolId: user.schoolId } },
-    select: { id: true, paidAmount: true, totalAmount: true, dueDate: true, status: true },
-  });
+  const { data: allFeesRaw } = await supabaseAdmin
+    .from("student_fees")
+    .select(
+      "id, paid_amount, total_amount, due_date, status, students!inner(school_id)"
+    )
+    .eq("students.school_id", user.schoolId);
+
+  const allFees = (allFeesRaw || []) as Array<{
+    id: string;
+    paid_amount: number;
+    total_amount: number;
+    due_date: string | null;
+    status: string;
+  }>;
+
   for (const sf of allFees) {
-    const correct = computeStatus(sf.paidAmount, sf.totalAmount, sf.dueDate);
+    const correct = computeStatus(sf.paid_amount, sf.total_amount, sf.due_date);
     if (correct !== sf.status) {
-      await db.studentFee.update({
-        where: { id: sf.id },
-        data: { status: correct },
+      await supabaseAdmin
+        .from("student_fees")
+        .update({ status: correct })
+        .eq("id", sf.id);
+    }
+  }
+
+  // Find matching student IDs first (for search/class scoping)
+  let matchingStudentIds: string[] | null = null;
+  if (search || (classId && classId !== "all") || scopedStudentId) {
+    let studentQuery = supabaseAdmin
+      .from("students")
+      .select("id, first_name, last_name, admission_number")
+      .eq("school_id", user.schoolId);
+    if (scopedStudentId) studentQuery = studentQuery.eq("id", scopedStudentId);
+    if (classId && classId !== "all")
+      studentQuery = studentQuery.eq("class_id", classId);
+    if (search) {
+      studentQuery = studentQuery.or(
+        `first_name.ilike.%${search}%,last_name.ilike.%${search}%,admission_number.ilike.%${search}%`
+      );
+    }
+    const { data: matchingStudents } = await studentQuery;
+    matchingStudentIds = (matchingStudents || []).map(
+      (s) => (s as { id: string }).id
+    );
+    if (matchingStudentIds.length === 0) {
+      return NextResponse.json({
+        ledger: [],
+        count: 0,
+        summary: { totalExpected: 0, totalPaid: 0, totalDue: 0 },
       });
     }
   }
 
-  // Build student filter
-  const studentWhere: {
-    schoolId: string;
-    classId?: string;
-    id?: string;
-    OR?: { firstName?: { contains: string }; lastName?: { contains: string }; admissionNumber?: { contains: string } }[];
-  } = { schoolId: user.schoolId };
+  let query = supabaseAdmin
+    .from("student_fees")
+    .select(
+      "*, students(id, first_name, last_name, admission_number, father_name, parent_phone, parent_email, classes(id, name), sections(id, name)), fee_structures(id, name, term, total_amount), fee_payments(id, amount, payment_method, payment_date, receipt_number, transaction_id, collected_by, remarks)"
+    )
+    .order("created_at", { ascending: false });
 
-  if (scopedStudentId) {
-    studentWhere.id = scopedStudentId;
-  }
-  if (classId && classId !== "all") {
-    studentWhere.classId = classId;
-  }
-  if (search) {
-    studentWhere.OR = [
-      { firstName: { contains: search } },
-      { lastName: { contains: search } },
-      { admissionNumber: { contains: search } },
-    ];
+  if (matchingStudentIds) {
+    query = query.in("student_id", matchingStudentIds);
+  } else {
+    // Scope by school via the embedded student relation
+    query = supabaseAdmin
+      .from("student_fees")
+      .select(
+        "*, students!inner(id, school_id, first_name, last_name, admission_number, father_name, parent_phone, parent_email, classes(id, name), sections(id, name)), fee_structures(id, name, term, total_amount), fee_payments(id, amount, payment_method, payment_date, receipt_number, transaction_id, collected_by, remarks)"
+      )
+      .eq("students.school_id", user.schoolId)
+      .order("created_at", { ascending: false });
   }
 
-  const where: { student: typeof studentWhere; status?: string } = {
-    student: studentWhere,
-  };
   if (status && status !== "all") {
-    where.status = status;
+    query = query.eq("status", status);
   }
 
-  const studentFees = await db.studentFee.findMany({
-    where,
-    include: {
-      student: {
-        include: {
-          class: { select: { id: true, name: true } },
-          section: { select: { id: true, name: true } },
-        },
-      },
-      feeStructure: { select: { id: true, name: true, term: true, totalAmount: true } },
-      payments: {
-        orderBy: { paymentDate: "desc" },
-        select: {
-          id: true,
-          amount: true,
-          paymentMethod: true,
-          paymentDate: true,
-          receiptNumber: true,
-          transactionId: true,
-          collectedBy: true,
-          remarks: true,
-        },
-      },
-    },
-    orderBy: [{ student: { firstName: "asc" } }, { student: { lastName: "asc" } }],
-  });
+  const { data: studentFeesRaw, error } = await query;
+
+  if (error) {
+    return NextResponse.json({ error: "Failed to fetch ledger" }, { status: 500 });
+  }
+
+  // Sort by student name (firstName asc, then lastName asc)
+  const studentFees = ((studentFeesRaw || []) as Array<Record<string, unknown>>).sort(
+    (a, b) => {
+      const sa = (a.students as Record<string, unknown>) || {};
+      const sb = (b.students as Record<string, unknown>) || {};
+      const fa = (sa.first_name as string) || "";
+      const fb = (sb.first_name as string) || "";
+      if (fa !== fb) return fa.localeCompare(fb);
+      const la = (sa.last_name as string) || "";
+      const lb = (sb.last_name as string) || "";
+      return la.localeCompare(lb);
+    }
+  );
 
   const today = new Date().toISOString().split("T")[0];
 
   const ledger = studentFees.map((sf) => {
-    const lastPayment =
-      sf.payments.length > 0 ? sf.payments[0] : null;
+    const payments = (sf.fee_payments as Array<Record<string, unknown>>) || [];
+    // Sort payments desc by payment_date
+    payments.sort((a, b) => {
+      const pa = (a.payment_date as string) || "";
+      const pb = (b.payment_date as string) || "";
+      return pb.localeCompare(pa);
+    });
+    const lastPayment = payments.length > 0 ? payments[0] : null;
+    const dueDate = sf.due_date as string | null;
     const daysOverdue =
-      sf.dueDate && sf.status !== "paid" && sf.dueDate < today
+      dueDate &&
+      (sf.status as string) !== "paid" &&
+      dueDate < today
         ? Math.floor(
-            (new Date(today).getTime() - new Date(sf.dueDate).getTime()) /
+            (new Date(today).getTime() - new Date(dueDate).getTime()) /
               (1000 * 60 * 60 * 24)
           )
         : 0;
     return {
       id: sf.id,
-      studentId: sf.studentId,
-      student: {
-        id: sf.student.id,
-        firstName: sf.student.firstName,
-        lastName: sf.student.lastName,
-        admissionNumber: sf.student.admissionNumber,
-        fatherName: sf.student.fatherName,
-        parentPhone: sf.student.parentPhone,
-        parentEmail: sf.student.parentEmail,
-        class: sf.student.class,
-        section: sf.student.section,
-      },
-      feeStructure: sf.feeStructure,
-      totalAmount: sf.totalAmount,
-      paidAmount: sf.paidAmount,
-      dueAmount: sf.dueAmount,
-      dueDate: sf.dueDate,
+      studentId: sf.student_id,
+      student: toCamelCase(sf.students as Record<string, unknown>),
+      feeStructure: toCamelCase(sf.fee_structures as Record<string, unknown>),
+      totalAmount: sf.total_amount,
+      paidAmount: sf.paid_amount,
+      dueAmount: sf.due_amount,
+      dueDate: sf.due_date,
       status: sf.status,
       daysOverdue,
       lastPayment: lastPayment
-        ? {
-            id: lastPayment.id,
-            receiptNumber: lastPayment.receiptNumber,
-            amount: lastPayment.amount,
-            paymentMethod: lastPayment.paymentMethod,
-            paymentDate: lastPayment.paymentDate,
-            collectedBy: lastPayment.collectedBy,
-          }
+        ? toCamelCase(lastPayment)
         : null,
-      payments: sf.payments,
+      payments: toCamelCase(payments as Record<string, unknown>[]),
     };
   });
 
@@ -154,9 +173,9 @@ export async function GET(req: Request) {
     ledger,
     count: ledger.length,
     summary: {
-      totalExpected: ledger.reduce((s, l) => s + l.totalAmount, 0),
-      totalPaid: ledger.reduce((s, l) => s + l.paidAmount, 0),
-      totalDue: ledger.reduce((s, l) => s + l.dueAmount, 0),
+      totalExpected: ledger.reduce((s, l) => s + (l.totalAmount as number), 0),
+      totalPaid: ledger.reduce((s, l) => s + (l.paidAmount as number), 0),
+      totalDue: ledger.reduce((s, l) => s + (l.dueAmount as number), 0),
     },
   });
 }

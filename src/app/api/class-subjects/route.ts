@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { supabaseAdmin, toCamelCase } from "@/lib/supabase/admin";
 import { getCurrentUser } from "@/lib/auth";
 
 // POST /api/class-subjects — assign a subject to a class.
@@ -27,22 +27,49 @@ export async function POST(req: NextRequest) {
   }
 
   // Validate class + subject belong to this school.
-  const [cls, subject] = await Promise.all([
-    db.class.findFirst({ where: { id: classId, schoolId: user.schoolId } }),
-    db.subject.findFirst({ where: { id: subjectId, schoolId: user.schoolId } }),
+  const [{ data: cls }, { data: subject }] = await Promise.all([
+    supabaseAdmin
+      .from("classes")
+      .select("id")
+      .eq("id", classId)
+      .eq("school_id", user.schoolId)
+      .maybeSingle(),
+    supabaseAdmin
+      .from("subjects")
+      .select("id")
+      .eq("id", subjectId)
+      .eq("school_id", user.schoolId)
+      .maybeSingle(),
   ]);
   if (!cls || !subject) {
-    return NextResponse.json({ error: "Class or subject not found" }, { status: 404 });
+    return NextResponse.json(
+      { error: "Class or subject not found" },
+      { status: 404 }
+    );
   }
 
-  // Upsert to handle the unique constraint on (classId, subjectId).
-  const cs = await db.classSubject.upsert({
-    where: { classId_subjectId: { classId, subjectId } },
-    update: {},
-    create: { classId, subjectId },
-  });
+  // Upsert on (class_id, subject_id). If the row already exists, this is a
+  // no-op update and returns the existing row.
+  const { data: cs, error } = await supabaseAdmin
+    .from("class_subjects")
+    .upsert(
+      { class_id: classId, subject_id: subjectId },
+      { onConflict: "class_id,subject_id" }
+    )
+    .select("id, class_id, subject_id")
+    .single();
 
-  return NextResponse.json({ classSubject: cs }, { status: 201 });
+  if (error || !cs) {
+    return NextResponse.json(
+      { error: "Failed to assign subject" },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json(
+    { classSubject: toCamelCase(cs as unknown as Record<string, unknown>) },
+    { status: 201 }
+  );
 }
 
 // DELETE /api/class-subjects — unassign a subject from a class.
@@ -70,14 +97,27 @@ export async function DELETE(req: NextRequest) {
   }
 
   // Verify school scope via the class.
-  const cls = await db.class.findFirst({
-    where: { id: classId, schoolId: user.schoolId },
-  });
+  const { data: cls } = await supabaseAdmin
+    .from("classes")
+    .select("id")
+    .eq("id", classId)
+    .eq("school_id", user.schoolId)
+    .maybeSingle();
   if (!cls) {
     return NextResponse.json({ error: "Class not found" }, { status: 404 });
   }
 
-  await db.classSubject.deleteMany({ where: { classId, subjectId } });
+  const { error } = await supabaseAdmin
+    .from("class_subjects")
+    .delete()
+    .eq("class_id", classId)
+    .eq("subject_id", subjectId);
+  if (error) {
+    return NextResponse.json(
+      { error: "Failed to unassign subject" },
+      { status: 500 }
+    );
+  }
 
   return NextResponse.json({ success: true });
 }
