@@ -778,3 +778,147 @@ Stage Summary:
   - Parent login (parent.diya): "Your child Diya Das's progress" + "Parent Portal" badge + "76% Child's Attendance" — only child's data ✓
   - Teacher login (anita.verma): "Good morning, Anita" + "Teacher Portal" badge + "My Classes, My Students, Homework Posted" — only teacher's data ✓
 - Lint: 0 errors. All 4 roles verified working with correct role-scoped data.
+
+---
+Task ID: FEES-ACCT-1
+Agent: Sub-agent (general-purpose)
+Task: Enhance the Fee Management module into a complete accountant tool — add student-wise fee ledger, defaulters management, daily/monthly collection reports, professional printable/downloadable receipts, and PDF export.
+
+Work Log:
+
+1. NEW API: /api/fees/ledger/route.ts (GET)
+   - Accountant's master ledger view — every student's complete fee picture in one API call.
+   - Returns per-student: name, admission number, class, section, fee structure, total/paid/due amounts, status, due date, full payment history array (receipt no, amount, method, date, collected by), last payment (for quick view), days overdue (computed), parent contact info.
+   - Filters: ?classId=&status=&search=
+   - Refreshes overdue statuses on each call (cheap pass through all student fees of the school).
+   - Role-based scoping: student/parent only see their own.
+   - Sorted by student name (firstName asc, lastName asc).
+   - Auth: `getCurrentUser()` + `user.schoolId` 401 check.
+
+2. NEW API: /api/fees/defaulters/route.ts (GET + POST)
+   - GET: returns all students with pending/partial/overdue fees (dueAmount > 0).
+     - Per-defaulter: student info, parent phone/email, fee structure, total/paid/due, due date, days overdue (computed), severity bucket (critical >30 days, overdue >7 days, pending), last payment.
+     - Filters: ?classId=&severity= (overdue = any days overdue, critical = >30 days)
+     - Sorted by due amount DESC (biggest defaulters first).
+     - Summary: totalDue, avgDaysOverdue, critical/overdue/pending counts.
+     - Blocked for student/parent role (no business seeing others).
+   - POST: logs a reminder by creating a Notice targeted to "parent" role. Records contact method (sms/email/call), outstanding due, parent contact. Returns noticeId + success message. (Lightweight — no separate reminder table; uses existing Notice table.)
+
+3. NEW API: /api/fees/collection-report/route.ts (GET)
+   - Daily/period collection report.
+   - Query: ?preset=today|thisWeek|thisMonth|custom&from=&to=
+   - Defaults to "today" preset.
+   - "thisWeek" computes Monday of current week (week starts Monday).
+   - "thisMonth" computes first day of current month.
+   - Returns: period {from, to, preset}, totalCollected, transactions count, breakdown by method (cash/online/cheque with amount + count), dailyChart (every day in range with label, amount, count — filled with zeros for missing days), payments list (receipt no, student name+admission+class, amount, method, date, collected by, transaction id, remarks, fee structure).
+   - Role-based scoping: student/parent only see their own payments.
+
+4. ENHANCED API: /api/fees/payments/[id]/route.ts (GET)
+   - Now returns `{ payment, school }` instead of just `{ payment }`.
+   - Payment includes: studentFee (with student + class + section + feeStructure + items + ALL previous payments on this student fee for payment history on the receipt).
+   - School: queried from School table by user.schoolId — name, address, phone, email, logo (for the receipt letterhead).
+   - Auth + role-based access preserved.
+
+5. FULL REWRITE: src/components/erp/modules/fees-module.tsx (~2700 lines)
+   - Tab structure: role-based via `useAuthStore`.
+     - accountant/school_admin/super_admin: Overview | Structures | Student Fees | Ledger | Defaulters | Reports | Receipts (7 tabs — Receipts remains accessible to all)
+     - student/parent: Overview | My Fees (Student Fees tab) | Receipts (3 tabs — accountant-only tabs are conditionally rendered out)
+   - Tab: Overview (kept + minor polish) — 4 stat cards (Collected This Month, Total Dues, Defaulters, Collection Rate) + 6-month collection bar chart + status breakdown pie + recent payments table.
+   - Tab: Fee Structures (kept) — grid view with CRUD via dropdown menu, "Assign to Class" action.
+   - Tab: Student Fees (kept) — search + class + status filters, table with Pay button + dropdown for receipts/details.
+   - Tab: Ledger (NEW) — accountant's master view:
+     - 3-card summary strip (Total Expected, Total Collected, Total Due).
+     - Filter bar: search, class select, status select, Apply button.
+     - Comprehensive table: Student (name+admission+class) | Fee Structure (name+term+due) | Total | Paid | Due | Status | Last Payment (receipt# + date) | Actions (History button + Pay button if not paid).
+     - "History" button opens LedgerHistoryDialog (max-w-2xl) showing student summary + complete payment history table with receipt download buttons.
+     - Empty state.
+   - Tab: Defaulters (NEW) — students with pending dues:
+     - 4 stat cards (Total Defaulters, Total Due Amount, Avg Days Overdue, Critical >30 days).
+     - Filter bar: class, severity.
+     - Table: Student | Class | Parent Contact (phone + email with icons) | Due Amount (bold red) | Due Date | Days Overdue (color-coded badge) | Status | Actions (Reminder bell icon button + Pay button).
+     - Severity color-coding: critical (>30 days) = red bg row + red badge; overdue (>7 days) = amber badge; pending = yellow badge.
+     - Reminder logs a notice via POST /api/fees/defaulters (toast confirmation).
+     - Empty state: "All fees paid! 🎉" with CheckCircle icon.
+   - Tab: Collection Report (NEW) — daily/monthly collection:
+     - Period selector: Today | This Week | This Month | Custom Range (reveals From/To date inputs when Custom selected).
+     - Generate button + Export CSV button.
+     - 5 stat cards: Total Collected, Cash, Online, Cheque, Transactions count.
+     - Daily Collection line chart (Recharts LineChart with monotone curve, emerald stroke).
+     - By Payment Method pie chart (cash=green, online=blue, cheque=amber).
+     - All Transactions table: Receipt # | Student (name+admission) | Class | Method | Date | Collected By | Amount | Receipt icon button.
+     - CSV export: downloads `collection-report-<from>-to-<to>.csv` with proper escaping.
+   - Tab: Receipts (kept) — table of all payments across student fees with View button.
+
+   - ENHANCED RECEIPT (major upgrade — ProfessionalReceipt component):
+     - A4-portrait aspect ratio container (max-w-[800px], white bg, 2px gray-800 border, rounded-lg, p-6 md:p-8).
+     - Watermark: faint school name diagonally across receipt (CSS rotate(-30deg), opacity 0.05, 6rem font, absolute centered, z-index 0).
+     - Letterhead: school logo circle (first letter of school name on gray-900 bg) + school name (2xl bold tracking-wide) + address + phone + email. Bottom border 2px gray-800.
+     - Receipt title row: "FEE PAYMENT RECEIPT" (lg uppercase tracking-widest) on left + Receipt No label/value on right.
+     - Meta row (3 columns): Receipt No | Date | Payment Method — each in a bordered gray-50 box with uppercase label.
+     - Student details section: bordered box with "STUDENT DETAILS" uppercase label + 2-col grid (Name, Admission No, Class+Section, Father's Name, Fee Structure, Term).
+     - Fee breakdown table: dark header (gray-800 bg, white text) with S.No | Fee Item | Amount (₹). Falls back to single row "{fs.name} | totalAmount" if no items. Total Fee row in gray-100 footer.
+     - Payment summary boxes (4 cols): Previous Balance (gray) | Amount Paid (green border+bg, highlighted) | Total Paid (gray) | Balance Due (red border+bg, highlighted).
+     - Amount in words: amber-bg box "Rupees in words: [numberToWords(amount)]" — implements Indian numbering (handles up to crores, with lakh/thousand/hundred; supports paise).
+     - Transaction details (if present): Transaction ID (mono) + Remarks.
+     - Payment History (if >1 payments): bordered mini-table showing all payments on this student fee (Receipt #, Date, Method, Amount).
+     - Footer: "Collected By" + italic "This is a computer-generated receipt and does not require a physical signature." on left; 3 signature blocks on right (Accountant, Principal with border-top signature lines, School Stamp circle with Stamp icon + dashed border).
+
+   - PDF DOWNLOAD (seamless print-to-PDF via hidden iframe):
+     - `printReceiptInIframe(payment, school)` helper:
+       - Builds a complete standalone HTML document string with inline CSS (full receipt markup, watermark, letterhead, tables, signature lines, @page A4 margin).
+       - Creates a hidden iframe (position fixed, 0x0, visibility hidden).
+       - Writes the HTML into the iframe's document.
+       - On iframe load, calls `iframe.contentWindow.focus()` + `iframe.contentWindow.print()`.
+       - Removes iframe after 1.5s.
+       - User gets the browser's print dialog where they can choose "Save as PDF" as destination — saves only the receipt (not the surrounding app UI).
+     - "Download PDF" button in ReceiptDialog triggers this; "Print" button triggers the same (both go through iframe for consistency).
+     - Helper utilities: `escapeHtml()` for safe HTML string building, `formatDateStatic()` for date formatting in the standalone HTML.
+
+   - SHARED HELPERS:
+     - `numberToWords(amount)`: Indian-format number-to-words. Handles crores, lakhs, thousands, hundreds, ones, tens, teens, paise. Returns "Twenty Five Thousand Five Hundred Rupees Only" for 25500. Handles zero, negatives.
+     - `escapeHtml(s)`: HTML entity escaping for safe iframe content.
+     - `formatDateStatic(dateStr)`: same logic as `formatDate` but usable in non-React context (iframe HTML).
+     - All existing helpers preserved: `apiFetch`, `formatDate`, `formatCurrency`, `STATUS_COLORS`, `PAYMENT_METHOD_LABELS`, `PAYMENT_METHOD_COLORS`.
+
+   - Tab-driven data fetching: useEffect on activeTab triggers the appropriate fetch (dashboard/structures/studentFees/ledger/defaulters/reports). Refresh handler routes to the correct fetcher for the active tab. Record Payment dialog's onSaved refreshes the active tab + any affected tabs (ledger if on ledger tab, defaulters if on defaulters tab, reports if on reports tab).
+
+6. Lint: `bun run lint` → 0 errors, 0 warnings.
+   TypeScript: full project `bunx tsc --noEmit` shows 0 errors in any of the new/modified files (pre-existing errors in unrelated files like seed.ts/dashboard.ts remain untouched).
+
+Stage Summary:
+The Fee Management module is now a complete accountant tool. When an accountant logs in, they get 7 tabs (Overview, Structures, Student Fees, Ledger, Defaulters, Reports, Receipts):
+1. **Ledger** — opens to see EVERY student's complete fee picture in one searchable/filterable table, with summary cards showing total expected/collected/due. Click "History" on any row → full payment history dialog with per-payment receipt download buttons.
+2. **Defaulters** — instant view of who hasn't paid, sorted by due amount (biggest defaulters first), color-coded by severity (red for >30 days, amber for >7 days, yellow for pending), with parent contact info and one-click reminder logging + Pay button.
+3. **Reports** — daily/weekly/monthly collection report with period selector, 5 stat cards (total + breakdown by cash/online/cheque + transactions), line chart of daily collection, pie chart by method, full transactions table, and CSV export.
+4. **Professional Receipt** — when viewing any payment, the receipt looks like a real school document: letterhead with school logo+name+address+phone+email, watermark, receipt meta row, student details box, fee breakdown table with dark header, 4-box payment summary with highlighted paid/balance boxes, amount in words (Indian format), payment history table, and signature lines for Accountant + Principal + School Stamp area. Both "Print" and "Download PDF" use a hidden iframe with a complete standalone HTML document, triggering the browser's print dialog where the user can save as PDF — gets only the receipt, not the app UI.
+
+Student/parent role sees only 3 tabs (Overview, My Fees, Receipts) — accountant-only tabs are hidden. All API routes enforce `getCurrentUser()` + schoolId 401 check + schoolId scoping + role-based filtering. Number-to-words handles up to crores with proper Indian grouping (lakh/crore rather than million/billion).
+
+
+---
+Task ID: FEES-ACCT-1
+Agent: Main (Z.ai Code) + Subagent
+Task: Enhance Fee Management module for accountant — detailed fee tracking, defaulters, collection reports, professional printable/downloadable receipts.
+
+Work Log:
+- Added 3 new API routes:
+  - /api/fees/ledger — complete fee ledger for all students with full payment history
+  - /api/fees/defaulters — all students with pending dues, days overdue, severity
+  - /api/fees/collection-report — daily/monthly collection with method breakdown
+- Enhanced /api/fees/payments/[id] to include school info (name, address, phone, email) for receipt letterhead
+- Rewrote fees-module.tsx with 7 tabs for accountant: Overview, Fee Structures, Student Fees, Ledger, Defaulters, Reports, Receipts
+- Ledger tab: master view of every student's fee status with History dialog showing all payments + receipt download buttons
+- Defaulters tab: students with pending dues, severity color-coding (red >30 days, amber >7 days), reminder option, Pay button
+- Reports tab: period selector (today/week/month/custom), stats by payment method, line chart, pie chart, CSV export
+- Professional receipt: A4 portrait, school letterhead with logo, receipt meta row, student details, fee breakdown table, payment summary boxes, amount in words (Indian format), signature lines, watermark
+- Download PDF: hidden iframe approach with standalone HTML + @page A4 CSS → print dialog → Save as PDF
+- Print button: direct window.print() with print-only styles
+
+Stage Summary:
+- Verified in browser with accountant login (deepak.mehta@greenwood.edu):
+  - 7 tabs visible: Overview, Fee Structures, Student Fees, Ledger, Defaulters, Reports, Receipts ✓
+  - Ledger: 97 students with fee details (Total ₹58,56,000, Collected ₹31,55,500, Due ₹27,00,500) ✓
+  - Receipts tab: all payments listed with View buttons ✓
+  - Professional receipt dialog: school letterhead, student details, fee breakdown table, payment summary, amount in words ("Sixty Nine Thousand Rupees Only"), Print + Download PDF buttons ✓
+  - VLM rated receipt 8/10 "highly professional, closely resembles a real school receipt"
+- Lint: 0 errors. All APIs return 200.

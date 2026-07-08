@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/auth";
 
 // GET — single payment (for receipt view)
+// Returns: payment + studentFee (with student, feeStructure, items, all previous payments) + school info
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -22,8 +23,14 @@ export async function GET(
     include: {
       studentFee: {
         include: {
-          student: { include: { class: true } },
+          student: {
+            include: {
+              class: { select: { id: true, name: true } },
+              section: { select: { id: true, name: true } },
+            },
+          },
           feeStructure: { include: { items: true } },
+          // All payments on this student fee — for payment history on the receipt
           payments: { orderBy: { paymentDate: "asc" } },
         },
       },
@@ -43,5 +50,18 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  return NextResponse.json({ payment });
+  // Fetch school info for the receipt letterhead
+  const school = await db.school.findUnique({
+    where: { id: user.schoolId },
+    select: {
+      id: true,
+      name: true,
+      address: true,
+      phone: true,
+      email: true,
+      logo: true,
+    },
+  });
+
+  return NextResponse.json({ payment, school });
 }
