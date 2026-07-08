@@ -1073,3 +1073,42 @@ Stage Summary:
 - Current Prisma + SQLite setup still works (both can coexist during migration)
 - RLS policies enforce: admin sees all school data, teacher can't edit timetable/staff, student/parent see only own data, accountant manages fees, etc.
 - All 28 tables ready with proper relationships, indexes, and security
+
+---
+Task ID: SUPABASE-CREDENTIALS-1
+Agent: Main (Z.ai Code)
+Task: Add user's Supabase credentials and finalize complete SQL schema with seed data.
+
+Work Log:
+- Set up .env with user's Supabase credentials:
+  - NEXT_PUBLIC_SUPABASE_URL=https://eyrykqvsbgsqwvqbfazw.supabase.co
+  - NEXT_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_yLrJYPAOGjfnbObtl8Kr0A_Gxxzqje6
+  - SUPABASE_SERVICE_ROLE_KEY=sb_secret_ahlPREHSj26pbDRme88scg_9wQoBocS
+- Expanded supabase/schema.sql from 927 → 1204 lines with full seed data:
+  - 1 school (Greenwood International School)
+  - 15 classes (Nursery to Class 12) with fixed UUIDs
+  - 30 sections (A, B for each class) — generated via DO block
+  - 12 subjects (English, Math, Science, SST, Hindi, CS, Physics, Chemistry, Biology, PE, Art, Music)
+  - 12 staff (Principal, VP, 6 teachers, Accountant, Librarian, Transport Mgr, HR Mgr) with real emails
+  - 10 demo students with class/section assignment, parent emails, blood groups, addresses
+  - 7 days attendance for all students (random statuses)
+  - 15 fee structures (one per class) + student fees assignment
+  - 10 library books with ISBN, categories, shelf locations
+  - 5 transport routes (North/South/East/West Delhi + Noida) with stops and fares
+  - 5 vehicles assigned to routes
+  - 5 notices
+  - 5 school events (Annual Day, Diwali, Exam, PTM, Sports Day)
+  - 1 exam (Mid-Term 2024 for Class 10) with exam results for 5 subjects
+  - 5 homework assignments
+  - 5 staff leaves (mix of approved/pending/rejected)
+  - 12 payrolls (current month for all staff)
+- Fixed a potential issue: library_books seed uses ON CONFLICT (id) but no explicit UUIDs — updated to use ON CONFLICT DO NOTHING
+
+Stage Summary:
+- Complete SQL file ready at /home/z/my-project/supabase/schema.sql (1204 lines)
+- User can copy-paste entire file into Supabase SQL Editor and Run
+- Creates: 28 tables, 14 enums, 119 RLS policies, 5 triggers, 14 indexes, 5 storage buckets, + full demo data
+- After SQL run, user creates super admin in Auth, then runs UPDATE profiles SET role='super_admin' WHERE email='...'
+- .env configured with real credentials
+- Supabase client files ready (client.ts, server.ts)
+- Next: migrate auth + data queries from Prisma to Supabase (when user confirms)

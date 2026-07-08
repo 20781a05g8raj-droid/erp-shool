@@ -893,9 +893,10 @@ CREATE POLICY "Auth read documents" ON storage.objects FOR SELECT USING (bucket_
 CREATE POLICY "Admin write documents" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'documents' AND is_admin());
 
 -- ============================================================================
--- 9. SEED DATA — Super Admin School + Demo Users
+-- 9. SEED DATA — School + Classes + Subjects + Staff + Students + Demo Data
 -- ============================================================================
--- Create a default school
+
+-- ---------- SCHOOL ----------
 INSERT INTO schools (id, name, address, phone, email, established_date)
 VALUES (
   '00000000-0000-0000-0000-000000000001',
@@ -907,14 +908,290 @@ VALUES (
 )
 ON CONFLICT (id) DO NOTHING;
 
--- NOTE: To create the Super Admin user, run this AFTER creating the user
--- via Supabase Auth (Dashboard → Authentication → Add User):
+-- ---------- CLASSES ----------
+INSERT INTO classes (id, name, "order", school_id) VALUES
+  ('a0000000-0000-0000-0000-000000000001', 'Nursery', 1, '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-000000000002', 'LKG', 2, '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-000000000003', 'UKG', 3, '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-000000000004', 'Class 1', 4, '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-000000000005', 'Class 2', 5, '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-000000000006', 'Class 3', 6, '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-000000000007', 'Class 4', 7, '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-000000000008', 'Class 5', 8, '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-000000000009', 'Class 6', 9, '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-00000000000a', 'Class 7', 10, '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-00000000000b', 'Class 8', 11, '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-00000000000c', 'Class 9', 12, '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-00000000000d', 'Class 10', 13, '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-00000000000e', 'Class 11', 14, '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-00000000000f', 'Class 12', 15, '00000000-0000-0000-0000-000000000001')
+ON CONFLICT (id) DO NOTHING;
+
+-- ---------- SECTIONS (A, B for each class) ----------
+-- Using a DO block to generate sections for all classes
+DO $$
+DECLARE
+  cls RECORD;
+  sec_char CHAR(1);
+  sec_order INT;
+BEGIN
+  FOR cls IN SELECT id FROM classes WHERE school_id = '00000000-0000-0000-0000-000000000001' LOOP
+    FOR sec_order IN 1..2 LOOP
+      sec_char := CHR(64 + sec_order); -- 'A' or 'B'
+      INSERT INTO sections (class_id, name)
+      VALUES (cls.id, sec_char)
+      ON CONFLICT DO NOTHING;
+    END LOOP;
+  END LOOP;
+END $$;
+
+-- ---------- SUBJECTS ----------
+INSERT INTO subjects (id, name, code, school_id) VALUES
+  ('b0000000-0000-0000-0000-000000000001', 'English', 'ENG', '00000000-0000-0000-0000-000000000001'),
+  ('b0000000-0000-0000-0000-000000000002', 'Mathematics', 'MATH', '00000000-0000-0000-0000-000000000001'),
+  ('b0000000-0000-0000-0000-000000000003', 'Science', 'SCI', '00000000-0000-0000-0000-000000000001'),
+  ('b0000000-0000-0000-0000-000000000004', 'Social Studies', 'SST', '00000000-0000-0000-0000-000000000001'),
+  ('b0000000-0000-0000-0000-000000000005', 'Hindi', 'HIN', '00000000-0000-0000-0000-000000000001'),
+  ('b0000000-0000-0000-0000-000000000006', 'Computer Science', 'CS', '00000000-0000-0000-0000-000000000001'),
+  ('b0000000-0000-0000-0000-000000000007', 'Physics', 'PHY', '00000000-0000-0000-0000-000000000001'),
+  ('b0000000-0000-0000-0000-000000000008', 'Chemistry', 'CHEM', '00000000-0000-0000-0000-000000000001'),
+  ('b0000000-0000-0000-0000-000000000009', 'Biology', 'BIO', '00000000-0000-0000-0000-000000000001'),
+  ('b0000000-0000-0000-0000-00000000000a', 'Physical Education', 'PE', '00000000-0000-0000-0000-000000000001'),
+  ('b0000000-0000-0000-0000-00000000000b', 'Art', 'ART', '00000000-0000-0000-0000-000000000001'),
+  ('b0000000-0000-0000-0000-00000000000c', 'Music', 'MUS', '00000000-0000-0000-0000-000000000001')
+ON CONFLICT (id) DO NOTHING;
+
+-- ---------- STAFF ----------
+INSERT INTO staff (id, employee_id, first_name, last_name, email, phone, designation, department, type, salary, school_id, status, qualification, joining_date) VALUES
+  ('c0000000-0000-0000-0000-000000000001', 'EMP0001', 'Rajesh', 'Kumar', 'rajesh.kumar@greenwood.edu', '+91 9800000011', 'Principal', 'Administration', 'non_teaching', 120000, '00000000-0000-0000-0000-000000000001', 'active', 'M.Ed, B.Ed', '2010-06-15'),
+  ('c0000000-0000-0000-0000-000000000002', 'EMP0002', 'Priya', 'Sharma', 'priya.sharma@greenwood.edu', '+91 9800000022', 'Vice Principal', 'Administration', 'non_teaching', 90000, '00000000-0000-0000-0000-000000000001', 'active', 'M.Ed', '2011-07-01'),
+  ('c0000000-0000-0000-0000-000000000003', 'EMP0003', 'Anita', 'Verma', 'anita.verma@greenwood.edu', '+91 9800000033', 'Senior Teacher', 'Mathematics', 'teaching', 55000, '00000000-0000-0000-0000-000000000001', 'active', 'M.Sc, B.Ed', '2012-03-15'),
+  ('c0000000-0000-0000-0000-000000000004', 'EMP0004', 'Suresh', 'Patel', 'suresh.patel@greenwood.edu', '+91 9800000044', 'Teacher', 'Science', 'teaching', 48000, '00000000-0000-0000-0000-000000000001', 'active', 'M.Sc, B.Ed', '2013-06-20'),
+  ('c0000000-0000-0000-0000-000000000005', 'EMP0005', 'Meena', 'Reddy', 'meena.reddy@greenwood.edu', '+91 9800000055', 'Teacher', 'English', 'teaching', 50000, '00000000-0000-0000-0000-000000000001', 'active', 'M.A, B.Ed', '2014-07-10'),
+  ('c0000000-0000-0000-0000-000000000006', 'EMP0006', 'Vikram', 'Singh', 'vikram.singh@greenwood.edu', '+91 9800000066', 'Teacher', 'Social Studies', 'teaching', 47000, '00000000-0000-0000-0000-000000000001', 'active', 'M.A, B.Ed', '2015-06-01'),
+  ('c0000000-0000-0000-0000-000000000007', 'EMP0007', 'Kavita', 'Nair', 'kavita.nair@greenwood.edu', '+91 9800000077', 'Teacher', 'Hindi', 'teaching', 45000, '00000000-0000-0000-0000-000000000001', 'active', 'M.A, B.Ed', '2016-07-15'),
+  ('c0000000-0000-0000-0000-000000000008', 'EMP0008', 'Arun', 'Gupta', 'arun.gupta@greenwood.edu', '+91 9800000088', 'Teacher', 'Computer Science', 'teaching', 52000, '00000000-0000-0000-0000-000000000001', 'active', 'MCA, B.Ed', '2017-06-10'),
+  ('c0000000-0000-0000-0000-000000000009', 'EMP0009', 'Deepak', 'Mehta', 'deepak.mehta@greenwood.edu', '+91 9800000099', 'Accountant', 'Finance', 'non_teaching', 40000, '00000000-0000-0000-0000-000000000001', 'active', 'B.Com', '2018-04-01'),
+  ('c0000000-0000-0000-0000-00000000000a', 'EMP0010', 'Lakshmi', 'Iyer', 'lakshmi.iyer@greenwood.edu', '+91 9800000100', 'Librarian', 'Library', 'non_teaching', 38000, '00000000-0000-0000-0000-000000000001', 'active', 'MLIS', '2019-06-15'),
+  ('c0000000-0000-0000-0000-00000000000b', 'EMP0011', 'Ramesh', 'Yadav', 'ramesh.yadav@greenwood.edu', '+91 9800000111', 'Transport Manager', 'Transport', 'non_teaching', 42000, '00000000-0000-0000-0000-000000000001', 'active', 'BBA', '2020-03-01'),
+  ('c0000000-0000-0000-0000-00000000000c', 'EMP0012', 'Sunita', 'Joshi', 'sunita.joshi@greenwood.edu', '+91 9800000122', 'HR Manager', 'Human Resources', 'non_teaching', 46000, '00000000-0000-0000-0000-000000000001', 'active', 'MBA HR', '2021-06-01')
+ON CONFLICT (id) DO NOTHING;
+
+-- ---------- CLASS SUBJECTS (assign first 6 subjects to each class) ----------
+DO $$
+DECLARE
+  cls RECORD;
+  subj RECORD;
+  subj_order INT;
+BEGIN
+  FOR cls IN SELECT id FROM classes WHERE school_id = '00000000-0000-0000-0000-000000000001' LOOP
+    subj_order := 0;
+    FOR subj IN SELECT id FROM subjects WHERE school_id = '00000000-0000-0000-0000-000000000001' ORDER BY code LIMIT 6 LOOP
+      subj_order := subj_order + 1;
+      INSERT INTO class_subjects (class_id, subject_id) VALUES (cls.id, subj.id) ON CONFLICT DO NOTHING;
+    END LOOP;
+  END LOOP;
+END $$;
+
+-- ---------- STUDENTS (10 demo students) ----------
+INSERT INTO students (id, admission_number, roll_number, first_name, last_name, email, phone, dob, gender, blood_group, address, class_id, section_id, status, school_id, father_name, mother_name, parent_phone, parent_email, admission_date) VALUES
+  ('d0000000-0000-0000-0000-000000000001', 'GRW1001', '1', 'Aarav', 'Sharma', 'aarav.sharma@student.greenwood.edu', '+91 9900000001', '2015-05-10', 'male', 'A+', '101, Sector 5, New Delhi', 'a0000000-0000-0000-0000-000000000004', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000004' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Sharma', 'Mrs. Sharma', '+91 9900000011', 'parent.aarav@gmail.com', '2021-06-15'),
+  ('d0000000-0000-0000-0000-000000000002', 'GRW1002', '2', 'Diya', 'Das', 'diya.das@student.greenwood.edu', '+91 9900000002', '2015-08-22', 'female', 'B+', '202, Sector 8, New Delhi', 'a0000000-0000-0000-0000-000000000004', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000004' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Das', 'Mrs. Das', '+91 9900000022', 'parent.diya@gmail.com', '2021-06-15'),
+  ('d0000000-0000-0000-0000-000000000003', 'GRW1003', '3', 'Vivaan', 'Kumar', 'vivaan.kumar@student.greenwood.edu', '+91 9900000003', '2015-03-15', 'male', 'O+', '303, Sector 12, New Delhi', 'a0000000-0000-0000-0000-000000000004', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000004' AND name='B' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Kumar', 'Mrs. Kumar', '+91 9900000033', 'parent.vivaan@gmail.com', '2021-07-01'),
+  ('d0000000-0000-0000-0000-000000000004', 'GRW1004', '4', 'Ananya', 'Gupta', 'ananya.gupta@student.greenwood.edu', '+91 9900000004', '2015-11-30', 'female', 'AB+', '404, Sector 3, New Delhi', 'a0000000-0000-0000-0000-000000000005', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000005' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Gupta', 'Mrs. Gupta', '+91 9900000044', 'parent.ananya@gmail.com', '2021-07-01'),
+  ('d0000000-0000-0000-0000-000000000005', 'GRW1005', '5', 'Aditya', 'Singh', 'aditya.singh@student.greenwood.edu', '+91 9900000005', '2014-09-18', 'male', 'A-', '505, Sector 7, New Delhi', 'a0000000-0000-0000-0000-000000000006', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000006' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Singh', 'Mrs. Singh', '+91 9900000055', 'parent.aditya@gmail.com', '2021-07-15'),
+  ('d0000000-0000-0000-0000-000000000006', 'GRW1006', '6', 'Saanvi', 'Patel', 'saanvi.patel@student.greenwood.edu', '+91 9900000006', '2014-02-25', 'female', 'B-', '606, Sector 9, New Delhi', 'a0000000-0000-0000-0000-000000000007', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000007' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Patel', 'Mrs. Patel', '+91 9900000066', 'parent.saanvi@gmail.com', '2021-07-15'),
+  ('d0000000-0000-0000-0000-000000000007', 'GRW1007', '7', 'Arjun', 'Reddy', 'arjun.reddy@student.greenwood.edu', '+91 9900000007', '2013-07-12', 'male', 'O-', '707, Sector 11, New Delhi', 'a0000000-0000-0000-0000-000000000008', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000008' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Reddy', 'Mrs. Reddy', '+91 9900000077', 'parent.arjun@gmail.com', '2021-08-01'),
+  ('d0000000-0000-0000-0000-000000000008', 'GRW1008', '8', 'Myra', 'Nair', 'myra.nair@student.greenwood.edu', '+91 9900000008', '2013-12-05', 'female', 'A+', '808, Sector 15, New Delhi', 'a0000000-0000-0000-0000-000000000009', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000009' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Nair', 'Mrs. Nair', '+91 9900000088', 'parent.myra@gmail.com', '2021-08-01'),
+  ('d0000000-0000-0000-0000-000000000009', 'GRW1009', '9', 'Krishna', 'Joshi', 'krishna.joshi@student.greenwood.edu', '+91 9900000009', '2012-04-20', 'male', 'B+', '909, Sector 18, New Delhi', 'a0000000-0000-0000-0000-00000000000c', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000c' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Joshi', 'Mrs. Joshi', '+91 9900000099', 'parent.krishna@gmail.com', '2021-08-15'),
+  ('d0000000-0000-0000-0000-00000000000a', 'GRW1010', '10', 'Ira', 'Mehta', 'ira.mehta@student.greenwood.edu', '+91 9900000010', '2012-10-08', 'female', 'AB+', '110, Sector 22, New Delhi', 'a0000000-0000-0000-0000-00000000000d', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000d' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Mehta', 'Mrs. Mehta', '+91 9900000100', 'parent.ira@gmail.com', '2021-08-15')
+ON CONFLICT (id) DO NOTHING;
+
+-- ---------- ATTENDANCE (last 7 days for first 5 students) ----------
+DO $$
+DECLARE
+  d_offset INT;
+  d_date TEXT;
+  stu RECORD;
+  statuses TEXT[] := ARRAY['present','present','present','present','absent','late','leave'];
+  rand_idx INT;
+BEGIN
+  FOR d_offset IN 0..6 LOOP
+    d_date := to_char(current_date - d_offset, 'YYYY-MM-DD');
+    FOR stu IN SELECT id FROM students WHERE school_id='00000000-0000-0000-0000-000000000001' LOOP
+      rand_idx := (random() * 6 + 1)::INT;
+      INSERT INTO student_attendance (student_id, date, status, marked_by)
+      VALUES (stu.id, d_date, statuses[rand_idx]::attendance_status, 'system')
+      ON CONFLICT (student_id, date) DO NOTHING;
+    END LOOP;
+  END LOOP;
+END $$;
+
+-- ---------- FEE STRUCTURES (one per class) ----------
+DO $$
+DECLARE
+  cls RECORD;
+  total_amt DECIMAL;
+BEGIN
+  FOR cls IN SELECT id, name FROM classes WHERE school_id='00000000-0000-0000-0000-000000000001' LOOP
+    total_amt := 45000 + (cls.name LIKE 'Class%' AND cls.name ~ '[0-9]+' AND substring(cls.name FROM '[0-9]+')::INT * 1000);
+    IF total_amt = 45000 THEN total_amt := 45000; END IF;
+    INSERT INTO fee_structures (name, class_id, school_id, term, total_amount, due_date)
+    VALUES (cls.name || ' - Annual Fee 2024-25', cls.id, '00000000-0000-0000-0000-000000000001', 'Annual', total_amt, '2024-12-31')
+    ON CONFLICT DO NOTHING;
+  END LOOP;
+END $$;
+
+-- ---------- STUDENT FEES (assign to all students) ----------
+DO $$
+DECLARE
+  stu RECORD;
+  fs RECORD;
+  paid_amt DECIMAL;
+  due_amt DECIMAL;
+  fee_status_val fee_status;
+BEGIN
+  FOR stu IN SELECT id, class_id FROM students WHERE school_id='00000000-0000-0000-0000-000000000001' LOOP
+    SELECT * INTO fs FROM fee_structures WHERE class_id = stu.class_id LIMIT 1;
+    IF FOUND THEN
+      paid_amt := CASE WHEN random() > 0.5 THEN fs.total_amount ELSE fs.total_amount * 0.5 END;
+      due_amt := fs.total_amount - paid_amt;
+      fee_status_val := CASE WHEN due_amt = 0 THEN 'paid'::fee_status WHEN paid_amt > 0 THEN 'partial'::fee_status ELSE 'pending'::fee_status END;
+      INSERT INTO student_fees (student_id, fee_structure_id, total_amount, paid_amount, due_amount, due_date, status)
+      VALUES (stu.id, fs.id, fs.total_amount, paid_amt, due_amt, fs.due_date, fee_status_val)
+      ON CONFLICT DO NOTHING;
+    END IF;
+  END LOOP;
+END $$;
+
+-- ---------- LIBRARY BOOKS ----------
+INSERT INTO library_books (title, author, isbn, category, publisher, total_copies, available_copies, shelf_location, school_id) VALUES
+  ('The Great Gatsby', 'F. Scott Fitzgerald', '9780743273565', 'Fiction', 'Scribner', 5, 3, 'A-12', '00000000-0000-0000-0000-000000000001'),
+  ('To Kill a Mockingbird', 'Harper Lee', '9780061120084', 'Fiction', 'HarperCollins', 4, 2, 'A-15', '00000000-0000-0000-0000-000000000001'),
+  ('A Brief History of Time', 'Stephen Hawking', '9780553380163', 'Science', 'Bantam', 3, 3, 'B-08', '00000000-0000-0000-0000-000000000001'),
+  ('Wings of Fire', 'A.P.J. Abdul Kalam', '9788173711466', 'Biography', 'Universities Press', 6, 5, 'C-03', '00000000-0000-0000-0000-000000000001'),
+  ('The Alchemist', 'Paulo Coelho', '9780061122415', 'Fiction', 'HarperOne', 4, 3, 'A-20', '00000000-0000-0000-0000-000000000001'),
+  ('Mathematics for Class 10', 'R.D. Sharma', '9789388700001', 'Textbook', 'Dhanpat Rai', 10, 8, 'D-05', '00000000-0000-0000-0000-000000000001'),
+  ('Physics Principles', 'H.C. Verma', '9788177091874', 'Textbook', 'Bharati Bhawan', 8, 6, 'D-10', '00000000-0000-0000-0000-000000000001'),
+  ('Indian History', 'Bipin Chandra', '9788125036842', 'History', 'Orient Blackswan', 3, 2, 'E-02', '00000000-0000-0000-0000-000000000001'),
+  ('Programming in Python', 'Mark Lutz', '9781449355739', 'Technology', "O'Reilly", 4, 4, 'F-01', '00000000-0000-0000-0000-000000000001'),
+  ('Organic Chemistry', 'Morrison Boyd', '9788131705099', 'Science', 'Pearson', 3, 2, 'B-15', '00000000-0000-0000-0000-000000000001')
+ON CONFLICT (id) DO NOTHING;
+
+-- ---------- TRANSPORT ROUTES ----------
+INSERT INTO transport_routes (name, stops, fare, school_id) VALUES
+  ('Route 1 - North Delhi', 'Rohini,Pitampura,Model Town', 1500, '00000000-0000-0000-0000-000000000001'),
+  ('Route 2 - South Delhi', 'Saket,Malviya Nagar,Pushp Vihar', 1800, '00000000-0000-0000-0000-000000000001'),
+  ('Route 3 - East Delhi', 'Preet Vihar,Vikas Marg,Mayur Vihar', 1600, '00000000-0000-0000-0000-000000000001'),
+  ('Route 4 - West Delhi', 'Janakpuri,Rajouri Garden,Punjabi Bagh', 1700, '00000000-0000-0000-0000-000000000001'),
+  ('Route 5 - Noida', 'Sector 18,Sector 62,Atta Market', 2000, '00000000-0000-0000-0000-000000000001')
+ON CONFLICT DO NOTHING;
+
+-- ---------- VEHICLES ----------
+INSERT INTO vehicles (bus_number, driver_name, driver_phone, capacity, route_id, school_id) VALUES
+  ('DL01B1001', 'Driver Ramesh', '+91 9911111111', 40, (SELECT id FROM transport_routes WHERE name LIKE 'Route 1%' LIMIT 1), '00000000-0000-0000-0000-000000000001'),
+  ('DL01B1002', 'Driver Suresh', '+91 9922222222', 40, (SELECT id FROM transport_routes WHERE name LIKE 'Route 2%' LIMIT 1), '00000000-0000-0000-0000-000000000001'),
+  ('DL01B1003', 'Driver Mahesh', '+91 9933333333', 35, (SELECT id FROM transport_routes WHERE name LIKE 'Route 3%' LIMIT 1), '00000000-0000-0000-0000-000000000001'),
+  ('DL01B1004', 'Driver Ganesh', '+91 9944444444', 40, (SELECT id FROM transport_routes WHERE name LIKE 'Route 4%' LIMIT 1), '00000000-0000-0000-0000-000000000001'),
+  ('DL01B1005', 'Driver Dinesh', '+91 9955555555', 45, (SELECT id FROM transport_routes WHERE name LIKE 'Route 5%' LIMIT 1), '00000000-0000-0000-0000-000000000001')
+ON CONFLICT DO NOTHING;
+
+-- ---------- NOTICES ----------
+INSERT INTO notices (title, content, target_audience, posted_by, date, school_id) VALUES
+  ('Annual Day Celebration', 'The school''s Annual Day will be celebrated on 25th December. All students must participate.', 'all', 'Rajesh Kumar', to_char(current_date, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
+  ('Parent-Teacher Meeting', 'PTM scheduled for this Saturday from 9 AM to 12 PM.', 'all', 'Rajesh Kumar', to_char(current_date, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
+  ('Fee Payment Reminder', 'Parents are reminded that the last date for fee payment is 31st December.', 'all', 'Deepak Mehta', to_char(current_date, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
+  ('Diwali Holiday', 'School will remain closed for Diwali. Classes resume after break.', 'all', 'Rajesh Kumar', to_char(current_date, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
+  ('Science Exhibition', 'Annual Science Exhibition on 20th November. Submit project ideas by 10th.', 'all', 'Suresh Patel', to_char(current_date, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001')
+ON CONFLICT DO NOTHING;
+
+-- ---------- EVENTS ----------
+INSERT INTO school_events (title, description, date, end_date, type, school_id) VALUES
+  ('Annual Day', 'Annual cultural function and prize distribution', '2024-12-25', NULL, 'function', '00000000-0000-0000-0000-000000000001'),
+  ('Diwali Break', 'Diwali holidays', '2024-11-10', '2024-11-15', 'holiday', '00000000-0000-0000-0000-000000000001'),
+  ('Mid-Term Exam', 'Mid-term examinations for all classes', '2024-09-15', '2024-09-25', 'exam', '00000000-0000-0000-0000-000000000001'),
+  ('PTM', 'Parent-Teacher Meeting for Class 10', '2024-11-30', NULL, 'ptm', '00000000-0000-0000-0000-000000000001'),
+  ('Sports Day', 'Annual sports day with various athletic events', '2024-11-05', NULL, 'function', '00000000-0000-0000-0000-000000000001')
+ON CONFLICT DO NOTHING;
+
+-- ---------- EXAM ----------
+INSERT INTO exams (name, type, school_id, class_id, start_date, end_date, max_marks)
+VALUES ('Mid-Term Examination 2024', 'mid_term', '00000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-00000000000d', '2024-09-15', '2024-09-25', 100)
+ON CONFLICT DO NOTHING;
+
+-- ---------- EXAM RESULTS (for Class 10 students, 5 subjects) ----------
+DO $$
+DECLARE
+  stu RECORD;
+  subj RECORD;
+  marks INT;
+  grade_val TEXT;
+BEGIN
+  FOR stu IN SELECT id FROM students WHERE class_id = 'a0000000-0000-0000-0000-00000000000d' LOOP
+    FOR subj IN SELECT id FROM subjects WHERE school_id='00000000-0000-0000-0000-000000000001' ORDER BY code LIMIT 5 LOOP
+      marks := 55 + (random() * 45)::INT;
+      grade_val := CASE WHEN marks >= 90 THEN 'A+' WHEN marks >= 80 THEN 'A' WHEN marks >= 70 THEN 'B+' WHEN marks >= 60 THEN 'B' WHEN marks >= 50 THEN 'C' ELSE 'D' END;
+      INSERT INTO exam_results (exam_id, student_id, subject_id, marks_obtained, max_marks, grade)
+      VALUES ((SELECT id FROM exams WHERE name='Mid-Term Examination 2024' LIMIT 1), stu.id, subj.id, marks, 100, grade_val)
+      ON CONFLICT (exam_id, student_id, subject_id) DO NOTHING;
+    END LOOP;
+  END LOOP;
+END $$;
+
+-- ---------- HOMEWORK ----------
+INSERT INTO homework (class_id, section_id, subject_id, staff_id, title, description, due_date, school_id) VALUES
+  ('a0000000-0000-0000-0000-00000000000d', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000d' AND name='A' LIMIT 1), 'b0000000-0000-0000-0000-000000000002', 'c0000000-0000-0000-0000-000000000003', 'Algebra - Quadratic Equations', 'Solve exercises 4.1 to 4.5 from textbook.', to_char(current_date + 7, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-00000000000c', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000c' AND name='A' LIMIT 1), 'b0000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-000000000005', 'Essay - My Favorite Book', 'Write a 500-word essay on your favorite book.', to_char(current_date + 5, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-00000000000b', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000b' AND name='A' LIMIT 1), 'b0000000-0000-0000-0000-000000000003', 'c0000000-0000-0000-0000-000000000004', 'Science Project - Photosynthesis', 'Create a diagram showing the process of photosynthesis.', to_char(current_date + 10, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-00000000000d', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000d' AND name='A' LIMIT 1), 'b0000000-0000-0000-0000-000000000004', 'c0000000-0000-0000-0000-000000000006', 'History - Independence Movement', 'Research 3 key events in India''s independence movement.', to_char(current_date + 7, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
+  ('a0000000-0000-0000-0000-00000000000a', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000a' AND name='A' LIMIT 1), 'b0000000-0000-0000-0000-000000000005', 'c0000000-0000-0000-0000-000000000007', 'Hindi - Kabir ke Dohe', 'Memorize 5 dohe by Kabir and write their meaning.', to_char(current_date + 4, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001')
+ON CONFLICT DO NOTHING;
+
+-- ---------- STAFF LEAVES ----------
+INSERT INTO staff_leaves (staff_id, from_date, to_date, reason, type, status, approved_by) VALUES
+  ('c0000000-0000-0000-0000-000000000003', '2024-11-01', '2024-11-03', 'Medical leave', 'sick', 'approved', 'Rajesh Kumar'),
+  ('c0000000-0000-0000-0000-000000000004', '2024-11-10', '2024-11-12', 'Personal work', 'casual', 'approved', 'Rajesh Kumar'),
+  ('c0000000-0000-0000-0000-000000000005', '2024-11-15', '2024-11-16', 'Family function', 'casual', 'pending', NULL),
+  ('c0000000-0000-0000-0000-000000000006', '2024-11-20', '2024-11-22', 'Not well', 'sick', 'pending', NULL),
+  ('c0000000-0000-0000-0000-000000000007', '2024-11-25', '2024-11-26', 'Personal', 'casual', 'rejected', 'Rajesh Kumar')
+ON CONFLICT DO NOTHING;
+
+-- ---------- PAYROLLS (current month for all staff) ----------
+DO $$
+DECLARE
+  stf RECORD;
+  basic DECIMAL;
+  allow DECIMAL;
+  deduct DECIMAL;
+  net DECIMAL;
+BEGIN
+  FOR stf IN SELECT id, salary FROM staff WHERE school_id='00000000-0000-0000-0000-000000000001' LOOP
+    basic := stf.salary;
+    allow := basic * 0.20;
+    deduct := basic * 0.12;
+    net := basic + allow - deduct;
+    INSERT INTO payrolls (staff_id, month, year, basic_salary, allowances, deductions, net_salary, status)
+    VALUES (stf.id, EXTRACT(MONTH FROM current_date)::INT, EXTRACT(YEAR FROM current_date)::INT, basic, allow, deduct, net, 'pending')
+    ON CONFLICT (staff_id, month, year) DO NOTHING;
+  END LOOP;
+END $$;
+
+-- ============================================================================
+-- 10. FINAL NOTES
+-- ============================================================================
+-- ✅ All tables created with proper relationships
+-- ✅ RLS policies enforce role-based access
+-- ✅ Storage buckets ready for file uploads
+-- ✅ Triggers auto-create profile on signup
+-- ✅ Demo data seeded: 1 school, 15 classes, 30 sections, 12 subjects,
+--    12 staff, 10 students, attendance, fees, books, routes, notices, events,
+--    exams with results, homework, leaves, payrolls
 --
---   UPDATE profiles
---   SET role = 'super_admin', name = 'Super Admin'
---   WHERE email = 'superadmin@eduflow.com';
---
--- Or create demo users via the app's User Management module after admin login.
+-- NEXT STEPS:
+-- 1. Create super admin user in Supabase Auth (Dashboard → Authentication → Users → Add User)
+-- 2. Run: UPDATE profiles SET role='super_admin', name='Super Admin' WHERE email='your-email@example.com';
+-- 3. Login to the app and manage everything from User Management module!
+-- ============================================================================
 
 -- ============================================================================
 -- DONE! 
