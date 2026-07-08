@@ -70,7 +70,9 @@ DROP FUNCTION IF EXISTS get_current_staff_id() CASCADE;
 -- Only auth.users trigger needs explicit drop:
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 
-DELETE FROM storage.buckets WHERE id IN ('student-photos','staff-photos','book-covers','homework-attachments','documents');
+-- Note: Storage buckets CANNOT be deleted via SQL in Supabase.
+-- We use INSERT ... ON CONFLICT DO NOTHING later to create them if they don't exist.
+-- If you need to delete buckets, use Supabase Dashboard → Storage.
 
 -- ============================================================================
 -- STEP 2: EXTENSIONS
