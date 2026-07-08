@@ -754,3 +754,27 @@ Verification:
 
 Stage Summary:
 The ERP's first impression is now a stunning split-screen login with animated gradient mesh, floating glass orbs, and a clean form with shine-sweep button. The dashboard shell feels like Linear/Vercel: animated sliding active indicator in the sidebar, premium gradient user cards, refined topbar with kbd-hinted search and notification iconography, and stats cards with gradient borders + radial glows on hover. Design system is now consistent (layered shadows, 3-stop gradients, tabular nums, premium focus rings, elegant scrollbars) and ready for the remaining modules to inherit the polish via the existing `.glass-card`, `.gradient-primary`, `.hover-lift` utilities.
+
+---
+Task ID: ROLE-DASH-1
+Agent: Main (Z.ai Code)
+Task: Make dashboard role-aware — student/parent/teacher see only their own data, admin sees school-wide data.
+
+Work Log:
+- Identified problem: dashboard API returned school-wide stats for ALL roles. Student saw "Total Students: 97" and "Fee Collected: ₹31,55,500" which is admin data.
+- Rewrote /api/dashboard/route.ts to return role-specific data:
+  - Admin (school_admin, super_admin, accountant, librarian, transport_manager, hr): school-wide stats (students, staff, fees, attendance, charts, notices)
+  - Teacher (staffId): myClasses, myStudents, homeworkPosted, todayPeriods, attendanceMarkingTrend, myClassesPerformance, myTimetableToday, myHomework, myLeaves, recentNotices
+  - Student/Parent (studentId): studentInfo, attendancePercent, feePaid, feeDue, pendingHomework, upcomingExams, myAttendanceTrend (30-day calendar), myExamResults, myTimetableToday, myFees, myHomework, recentNotices
+- Rewrote dashboard-module.tsx with 3 view components: AdminDashboard, TeacherDashboard, StudentDashboard. Each renders completely different layout based on data.role.
+- Student/Parent view: greeting with student name + class/section, 4 personal stat cards (My Attendance %, Fee Paid, Pending Homework, Upcoming Exams), 30-day attendance calendar grid with color-coded days, exam results table, today's timetable, fee breakdown card, homework list, notices.
+- Teacher view: greeting with teacher name, 4 stat cards (My Classes, My Students, Homework Posted, Today's Periods), attendance marking bar chart, classes performance chart, today's timetable, recent homework, leaves, notices.
+- Admin view: unchanged — greeting + 4 stat cards + attendance/fee/exam charts + gender/class distribution + recent notices/admissions.
+
+Stage Summary:
+- Verified in browser:
+  - Admin login: "Good morning, Rajesh" + "Admin Portal" badge + "Total Students: 97" ✓
+  - Student login (diya.das): "Good morning, Diya Das" + "Student Portal" badge + "76% My Attendance" + "₹25,500 Fee Paid" — NO admin data ✓
+  - Parent login (parent.diya): "Your child Diya Das's progress" + "Parent Portal" badge + "76% Child's Attendance" — only child's data ✓
+  - Teacher login (anita.verma): "Good morning, Anita" + "Teacher Portal" badge + "My Classes, My Students, Homework Posted" — only teacher's data ✓
+- Lint: 0 errors. All 4 roles verified working with correct role-scoped data.
