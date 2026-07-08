@@ -53,7 +53,7 @@ export const ROLE_MODULES: Record<Role, string[]> = {
   accountant: ["dashboard", "fees", "students", "reports"],
   librarian: ["dashboard", "library"],
   transport_manager: ["dashboard", "transport", "students"],
-  hr: ["dashboard", "staff", "hr"],
+  hr: ["dashboard", "staff", "hr", "timetable", "attendance", "students"],
 };
 
 export function getNavItems(role: Role): NavItem[] {

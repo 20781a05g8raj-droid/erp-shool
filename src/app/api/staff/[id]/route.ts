@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/auth";
+import { canManageStaff } from "@/lib/permissions";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -83,6 +84,9 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   const user = await getCurrentUser();
   if (!user || !user.schoolId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!canManageStaff(user.role)) {
+    return NextResponse.json({ error: "You don't have permission to manage staff" }, { status: 403 });
   }
 
   const { id } = await params;
@@ -171,6 +175,9 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams) {
   const user = await getCurrentUser();
   if (!user || !user.schoolId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!canManageStaff(user.role)) {
+    return NextResponse.json({ error: "You don't have permission to manage staff" }, { status: 403 });
   }
 
   const { id } = await params;

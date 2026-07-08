@@ -11,6 +11,8 @@ import {
 import { toast } from "sonner";
 
 import { apiFetch, formatDate, formatCurrency, getInitials, STATUS_COLORS } from "@/lib/api";
+import { canManageStaff } from "@/lib/permissions";
+import { useAuthStore } from "@/store/auth";
 import { PageHeader } from "@/components/erp/page-header";
 import { EmptyState } from "@/components/erp/empty-state";
 import { StatsCard } from "@/components/erp/stats-card";
@@ -200,6 +202,8 @@ const EMPTY_FORM: StaffFormState = {
 // ==================== Component ====================
 
 export function StaffModule() {
+  const { user } = useAuthStore();
+  const canManage = canManageStaff(user?.role || "student");
   const [staff, setStaff] = useState<StaffListItem[]>([]);
   const [onLeaveTodayCount, setOnLeaveTodayCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -401,10 +405,10 @@ export function StaffModule() {
     <div className="space-y-6">
       <PageHeader
         title="Staff"
-        description="Manage teaching and non-teaching staff records, profiles, and assignments."
+        description={canManage ? "Manage teaching and non-teaching staff records, profiles, and assignments." : "View staff directory and profiles."}
         icon={GraduationCap}
-        actionLabel="Add Staff"
-        onAction={openAddDialog}
+        actionLabel={canManage ? "Add Staff" : undefined}
+        onAction={canManage ? openAddDialog : undefined}
       />
 
       {/* Stats row */}
@@ -468,9 +472,9 @@ export function StaffModule() {
           <EmptyState
             icon={GraduationCap}
             title="No staff yet"
-            description="Add your first staff member to start managing teaching and non-teaching records."
-            actionLabel="Add Staff"
-            onAction={openAddDialog}
+            description={canManage ? "Add your first staff member to start managing teaching and non-teaching records." : "There are no staff members in the directory yet."}
+            actionLabel={canManage ? "Add Staff" : undefined}
+            onAction={canManage ? openAddDialog : undefined}
           />
         </Card>
       ) : (
@@ -587,18 +591,24 @@ export function StaffModule() {
                             <Eye className="w-4 h-4 mr-2" />
                             View Profile
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => openEditDialog(s)}>
-                            <Pencil className="w-4 h-4 mr-2" />
-                            Edit
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            className="text-red-600 dark:text-red-400"
-                            onClick={() => setDeleteTarget(s)}
-                          >
-                            <Trash2 className="w-4 h-4 mr-2" />
-                            Delete
-                          </DropdownMenuItem>
+                          {canManage && (
+                            <DropdownMenuItem onClick={() => openEditDialog(s)}>
+                              <Pencil className="w-4 h-4 mr-2" />
+                              Edit
+                            </DropdownMenuItem>
+                          )}
+                          {canManage && (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                className="text-red-600 dark:text-red-400"
+                                onClick={() => setDeleteTarget(s)}
+                              >
+                                <Trash2 className="w-4 h-4 mr-2" />
+                                Delete
+                              </DropdownMenuItem>
+                            </>
+                          )}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </TableCell>
@@ -950,29 +960,31 @@ export function StaffModule() {
               </div>
 
               {/* Actions */}
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="flex-1"
-                  onClick={() => {
-                    setDetailOpen(false);
-                    openEditDialog(detail);
-                  }}
-                >
-                  <Pencil className="w-4 h-4 mr-2" />
-                  Edit
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="flex-1 text-red-600 dark:text-red-400 hover:bg-red-500/10"
-                  onClick={() => setDeleteTarget(detail)}
-                >
-                  <Trash2 className="w-4 h-4 mr-2" />
-                  Delete
-                </Button>
-              </div>
+              {canManage && (
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => {
+                      setDetailOpen(false);
+                      openEditDialog(detail);
+                    }}
+                  >
+                    <Pencil className="w-4 h-4 mr-2" />
+                    Edit
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1 text-red-600 dark:text-red-400 hover:bg-red-500/10"
+                    onClick={() => setDeleteTarget(detail)}
+                  >
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Delete
+                  </Button>
+                </div>
+              )}
 
               <DetailSection title="Personal Information" icon={Users}>
                 <DetailRow label="Date of Birth" value={formatDate(detail.dob)} />

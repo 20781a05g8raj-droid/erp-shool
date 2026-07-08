@@ -20,6 +20,7 @@ import { apiFetch } from "@/lib/api";
 import { PageHeader } from "@/components/erp/page-header";
 import { EmptyState } from "@/components/erp/empty-state";
 import { useAuthStore } from "@/store/auth";
+import { canEditTimetable } from "@/lib/permissions";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -138,7 +139,8 @@ export function TimetableModule() {
 
   const isTeacher = role === "teacher";
   const isStudent = role === "student" || role === "parent";
-  const canEdit = role === "super_admin" || role === "school_admin" || role === "teacher";
+  // Only HR and School Admin can edit timetable; Teacher/Student/Parent = view only
+  const canEdit = canEditTimetable(role);
 
   const [classes, setClasses] = useState<ClassOption[]>([]);
   const [staff, setStaff] = useState<StaffOption[]>([]);

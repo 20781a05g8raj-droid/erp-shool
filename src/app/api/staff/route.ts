@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/auth";
+import { canManageStaff } from "@/lib/permissions";
 
 // GET /api/staff — list of staff for the current school.
 // Supports filters: ?department=&type=&search=&status=
@@ -70,6 +71,10 @@ export async function POST(req: NextRequest) {
   const user = await getCurrentUser();
   if (!user || !user.schoolId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  // Only HR, school_admin, super_admin can add staff
+  if (!canManageStaff(user.role)) {
+    return NextResponse.json({ error: "You don't have permission to manage staff" }, { status: 403 });
   }
 
   try {

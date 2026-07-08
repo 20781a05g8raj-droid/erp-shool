@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/auth";
+import { canMarkStaffAttendance } from "@/lib/permissions";
 
 // GET /api/attendance/staff?date=YYYY-MM-DD
 // Returns all staff of the school with their attendance for the given date (default today).
@@ -85,6 +86,10 @@ export async function POST(req: Request) {
   const user = await getCurrentUser();
   if (!user || !user.schoolId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  // Only HR, school_admin, super_admin can mark staff attendance (NOT teachers)
+  if (!canMarkStaffAttendance(user.role)) {
+    return NextResponse.json({ error: "You don't have permission to mark staff attendance" }, { status: 403 });
   }
 
   try {

@@ -23,6 +23,8 @@ import {
   formatDate,
   STATUS_COLORS,
 } from "@/lib/api";
+import { canMarkStudentAttendance, canMarkStaffAttendance } from "@/lib/permissions";
+import type { Role } from "@/types";
 import { PageHeader } from "@/components/erp/page-header";
 import { EmptyState } from "@/components/erp/empty-state";
 import { StatsCard } from "@/components/erp/stats-card";
@@ -159,11 +161,13 @@ function shortMonth(d: Date): string {
 
 function getRoleTabs(role: string): ("mark" | "calendar" | "staff")[] {
   const tabs: ("mark" | "calendar" | "staff")[] = [];
-  if (["teacher", "school_admin", "super_admin", "accountant"].includes(role)) {
+  // Student attendance marking: teacher, school_admin, super_admin, hr
+  if (canMarkStudentAttendance(role as Role)) {
     tabs.push("mark");
   }
   tabs.push("calendar"); // everyone sees calendar
-  if (["teacher", "school_admin", "super_admin", "hr"].includes(role)) {
+  // Staff attendance marking: school_admin, super_admin, hr ONLY (not teacher)
+  if (canMarkStaffAttendance(role as Role)) {
     tabs.push("staff");
   }
   return tabs;

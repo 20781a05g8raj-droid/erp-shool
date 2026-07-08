@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getCurrentUser } from "@/lib/auth";
+import { canManageStudents } from "@/lib/permissions";
 
 // GET /api/students — list with optional ?classId=&search=&status= filters
 export async function GET(req: NextRequest) {
@@ -46,6 +47,10 @@ export async function POST(req: NextRequest) {
   const user = await getCurrentUser();
   if (!user || !user.schoolId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  // Only accountant, school_admin, super_admin can add students
+  if (!canManageStudents(user.role)) {
+    return NextResponse.json({ error: "You don't have permission to manage students" }, { status: 403 });
   }
 
   const schoolId = user.schoolId;

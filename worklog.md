@@ -922,3 +922,41 @@ Stage Summary:
   - Professional receipt dialog: school letterhead, student details, fee breakdown table, payment summary, amount in words ("Sixty Nine Thousand Rupees Only"), Print + Download PDF buttons ✓
   - VLM rated receipt 8/10 "highly professional, closely resembles a real school receipt"
 - Lint: 0 errors. All APIs return 200.
+
+---
+Task ID: ROLE-PERMS-1
+Agent: Main (Z.ai Code)
+Task: Role-based permission system — restrict each role to only their allowed actions.
+
+Work Log:
+- Created /src/lib/permissions.ts with permission matrix + helper functions for all module actions
+- Updated /src/lib/navigation.ts: added "timetable" + "attendance" + "students" to HR's modules
+- Updated students-module.tsx: Add/Edit/Delete buttons conditionally rendered via canManageStudents() — only accountant/school_admin/super_admin see them; teacher/transport_manager see read-only view
+- Updated staff-module.tsx: Add/Edit/Delete via canManageStaff() — only HR/school_admin/super_admin
+- Updated attendance-module.tsx: getRoleTabs() now uses canMarkStudentAttendance() and canMarkStaffAttendance() — teacher gets only "Mark Attendance" + "Calendar" tabs (NO "Staff" tab); HR gets all 3 tabs
+- Updated timetable-module.tsx: canEdit now uses canEditTimetable() — teacher = read-only view; HR/school_admin/super_admin = full edit
+- Added API role checks (403 Forbidden):
+  - POST /api/students → canManageStudents (accountant/admin only)
+  - PUT/DELETE /api/students/[id] → canManageStudents
+  - POST /api/staff → canManageStaff (HR/admin only)
+  - PUT/DELETE /api/staff/[id] → canManageStaff
+  - POST /api/timetable → canEditTimetable (HR/admin only)
+  - DELETE /api/timetable/[id] → canEditTimetable
+  - POST /api/attendance/staff → canMarkStaffAttendance (HR/admin only, NOT teacher)
+
+Stage Summary:
+- API permission tests (all passed):
+  - Teacher POST /api/students → 403 ✅
+  - Teacher POST /api/timetable → 403 ✅
+  - Teacher POST /api/attendance/staff → 403 ✅
+  - Accountant POST /api/students → 201 ✅
+  - HR POST /api/timetable → passed permission check ✅
+- UI tests (teacher):
+  - Students: no "Add Student" button (read-only) ✅
+  - Attendance: only "Mark Attendance" + "Calendar" tabs (no Staff tab) ✅
+  - Timetable: no "Save" button (read-only) ✅
+- UI tests (HR):
+  - Sidebar: Dashboard, Students, Staff, Attendance, Timetable, HR & Payroll ✅
+  - Attendance: has "Staff" tab ✅
+  - Staff: has "Add Staff" button ✅
+- Lint: 0 errors

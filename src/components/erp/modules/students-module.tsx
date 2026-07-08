@@ -10,6 +10,8 @@ import {
 import { toast } from "sonner";
 
 import { apiFetch, formatDate, formatCurrency, getInitials } from "@/lib/api";
+import { canManageStudents } from "@/lib/permissions";
+import { useAuthStore } from "@/store/auth";
 import { PageHeader } from "@/components/erp/page-header";
 import { EmptyState } from "@/components/erp/empty-state";
 import { StatsCard } from "@/components/erp/stats-card";
@@ -181,6 +183,8 @@ const EMPTY_FORM: StudentFormState = {
 // ==================== Component ====================
 
 export function StudentsModule() {
+  const { user } = useAuthStore();
+  const canManage = canManageStudents(user?.role || "student");
   const [students, setStudents] = useState<StudentListItem[]>([]);
   const [classes, setClasses] = useState<ClassOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -416,10 +420,10 @@ export function StudentsModule() {
     <div className="space-y-6">
       <PageHeader
         title="Students"
-        description="Manage student admissions, profiles, and class assignments."
+        description={canManage ? "Manage student admissions, profiles, and class assignments." : "View student directory and profiles."}
         icon={Users}
-        actionLabel="Add Student"
-        onAction={openAddDialog}
+        actionLabel={canManage ? "Add Student" : undefined}
+        onAction={canManage ? openAddDialog : undefined}
       />
 
       {/* Stats row */}
@@ -483,9 +487,9 @@ export function StudentsModule() {
           <EmptyState
             icon={Users}
             title="No students yet"
-            description="Add your first student to start managing admissions, profiles, and class assignments."
-            actionLabel="Add Student"
-            onAction={openAddDialog}
+            description={canManage ? "Add your first student to start managing admissions, profiles, and class assignments." : "There are no students in the directory yet."}
+            actionLabel={canManage ? "Add Student" : undefined}
+            onAction={canManage ? openAddDialog : undefined}
           />
         </Card>
       ) : (
@@ -579,18 +583,24 @@ export function StudentsModule() {
                             <Eye className="w-4 h-4 mr-2" />
                             View Profile
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => openEditDialog(student)}>
-                            <Pencil className="w-4 h-4 mr-2" />
-                            Edit
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            className="text-red-600 dark:text-red-400"
-                            onClick={() => setDeleteTarget(student)}
-                          >
-                            <Trash2 className="w-4 h-4 mr-2" />
-                            Delete
-                          </DropdownMenuItem>
+                          {canManage && (
+                            <DropdownMenuItem onClick={() => openEditDialog(student)}>
+                              <Pencil className="w-4 h-4 mr-2" />
+                              Edit
+                            </DropdownMenuItem>
+                          )}
+                          {canManage && (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                className="text-red-600 dark:text-red-400"
+                                onClick={() => setDeleteTarget(student)}
+                              >
+                                <Trash2 className="w-4 h-4 mr-2" />
+                                Delete
+                              </DropdownMenuItem>
+                            </>
+                          )}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </TableCell>
@@ -968,29 +978,31 @@ export function StudentsModule() {
               </div>
 
               {/* Actions */}
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="flex-1"
-                  onClick={() => {
-                    setDetailOpen(false);
-                    openEditDialog(detail);
-                  }}
-                >
-                  <Pencil className="w-4 h-4 mr-2" />
-                  Edit
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="flex-1 text-red-600 dark:text-red-400 hover:bg-red-500/10"
-                  onClick={() => setDeleteTarget(detail)}
-                >
-                  <Trash2 className="w-4 h-4 mr-2" />
-                  Delete
-                </Button>
-              </div>
+              {canManage && (
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => {
+                      setDetailOpen(false);
+                      openEditDialog(detail);
+                    }}
+                  >
+                    <Pencil className="w-4 h-4 mr-2" />
+                    Edit
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1 text-red-600 dark:text-red-400 hover:bg-red-500/10"
+                    onClick={() => setDeleteTarget(detail)}
+                  >
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Delete
+                  </Button>
+                </div>
+              )}
 
               <DetailSection title="Personal Information" icon={UserIcon}>
                 <DetailRow label="Date of Birth" value={formatDate(detail.dob)} />
