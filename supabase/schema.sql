@@ -1,13 +1,19 @@
 -- ============================================================================
--- EduFlow ERP — Supabase Schema (Complete, Idempotent)
--- Run this in Supabase SQL Editor (Dashboard → SQL → New Query)
--- Safe to re-run multiple times — drops existing objects first.
+-- EduFlow ERP — Complete Supabase Schema
+-- ============================================================================
+-- INSTRUCTIONS:
+-- 1. Supabase Dashboard → SQL Editor → New Query
+-- 2. Paste this ENTIRE file
+-- 3. Click Run
+-- 4. Wait for "Success" message (takes 10-20 seconds)
 -- ============================================================================
 
 -- ============================================================================
--- 0. CLEANUP (drop existing — so you can re-run without errors)
+-- STEP 1: CLEANUP — Remove everything if it already exists
 -- ============================================================================
--- Drop tables (IF EXISTS prevents errors if they don't exist yet)
+-- This makes the script safe to re-run multiple times.
+-- IF EXISTS = don't error if the object doesn't exist yet.
+
 DROP TABLE IF EXISTS certificates CASCADE;
 DROP TABLE IF EXISTS school_events CASCADE;
 DROP TABLE IF EXISTS notices CASCADE;
@@ -37,7 +43,6 @@ DROP TABLE IF EXISTS classes CASCADE;
 DROP TABLE IF EXISTS profiles CASCADE;
 DROP TABLE IF EXISTS schools CASCADE;
 
--- Drop enums (CASCADE handles any dependencies)
 DROP TYPE IF EXISTS user_role CASCADE;
 DROP TYPE IF EXISTS student_status CASCADE;
 DROP TYPE IF EXISTS staff_type CASCADE;
@@ -53,7 +58,6 @@ DROP TYPE IF EXISTS certificate_type CASCADE;
 DROP TYPE IF EXISTS notice_audience CASCADE;
 DROP TYPE IF EXISTS payroll_status CASCADE;
 
--- Drop functions (IF EXISTS prevents errors)
 DROP FUNCTION IF EXISTS update_updated_at() CASCADE;
 DROP FUNCTION IF EXISTS handle_new_user() CASCADE;
 DROP FUNCTION IF EXISTS get_current_school_id() CASCADE;
@@ -62,22 +66,26 @@ DROP FUNCTION IF EXISTS is_admin() CASCADE;
 DROP FUNCTION IF EXISTS get_current_student_id() CASCADE;
 DROP FUNCTION IF EXISTS get_current_staff_id() CASCADE;
 
--- Drop trigger on auth.users (safe — IF EXISTS)
+-- Note: triggers on our tables are auto-dropped when we DROP TABLE CASCADE above.
+-- Only auth.users trigger needs explicit drop:
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 
--- Drop storage buckets if they exist
 DELETE FROM storage.buckets WHERE id IN ('student-photos','staff-photos','book-covers','homework-attachments','documents');
 
 -- ============================================================================
--- 1. EXTENSIONS
+-- STEP 2: EXTENSIONS
 -- ============================================================================
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ============================================================================
--- 2. ENUMS
+-- STEP 3: ENUMS (custom types for type safety)
 -- ============================================================================
-CREATE TYPE user_role AS ENUM ('super_admin', 'school_admin', 'teacher', 'student', 'parent', 'accountant', 'librarian', 'transport_manager', 'hr');
+CREATE TYPE user_role AS ENUM (
+  'super_admin', 'school_admin', 'teacher', 'student', 'parent',
+  'accountant', 'librarian', 'transport_manager', 'hr'
+);
+
 CREATE TYPE student_status AS ENUM ('active', 'alumni', 'transferred', 'suspended');
 CREATE TYPE staff_type AS ENUM ('teaching', 'non_teaching');
 CREATE TYPE fee_status AS ENUM ('pending', 'partial', 'paid', 'overdue');
@@ -93,10 +101,11 @@ CREATE TYPE notice_audience AS ENUM ('all', 'class', 'role');
 CREATE TYPE payroll_status AS ENUM ('pending', 'paid');
 
 -- ============================================================================
--- 3. TABLES
+-- STEP 4: TABLES
 -- ============================================================================
+-- Order matters: parent tables first, then child tables with foreign keys.
 
--- SCHOOLS
+-- 4.1 SCHOOLS (top-level — no dependencies)
 CREATE TABLE schools (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name TEXT NOT NULL,
@@ -109,7 +118,7 @@ CREATE TABLE schools (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- PROFILES (linked to auth.users)
+-- 4.2 PROFILES (linked 1:1 to Supabase auth.users)
 CREATE TABLE profiles (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   email TEXT UNIQUE NOT NULL,
@@ -119,13 +128,13 @@ CREATE TABLE profiles (
   role user_role NOT NULL DEFAULT 'school_admin',
   school_id UUID REFERENCES schools(id) ON DELETE SET NULL,
   status TEXT NOT NULL DEFAULT 'active',
-  student_id UUID,
-  staff_id UUID,
+  student_id UUID,  -- FK added later (circular dependency with students)
+  staff_id UUID,    -- FK added later (circular dependency with staff)
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- CLASSES
+-- 4.3 CLASSES
 CREATE TABLE classes (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name TEXT NOT NULL,
@@ -134,7 +143,7 @@ CREATE TABLE classes (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- SECTIONS
+-- 4.4 SECTIONS (class_teacher_id FK added later, after staff table exists)
 CREATE TABLE sections (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name TEXT NOT NULL,
@@ -143,7 +152,7 @@ CREATE TABLE sections (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- SUBJECTS
+-- 4.5 SUBJECTS
 CREATE TABLE subjects (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name TEXT NOT NULL,
@@ -152,7 +161,7 @@ CREATE TABLE subjects (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- CLASS_SUBJECTS
+-- 4.6 CLASS_SUBJECTS (junction table)
 CREATE TABLE class_subjects (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   class_id UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
@@ -160,7 +169,7 @@ CREATE TABLE class_subjects (
   UNIQUE(class_id, subject_id)
 );
 
--- STAFF
+-- 4.7 STAFF
 CREATE TABLE staff (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   employee_id TEXT UNIQUE NOT NULL,
@@ -183,11 +192,12 @@ CREATE TABLE staff (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- FK: sections.class_teacher_id → staff.id
-ALTER TABLE sections ADD CONSTRAINT sections_class_teacher_fk
+-- Now add FK: sections.class_teacher_id → staff.id
+ALTER TABLE sections
+  ADD CONSTRAINT sections_class_teacher_fk
   FOREIGN KEY (class_teacher_id) REFERENCES staff(id) ON DELETE SET NULL;
 
--- STUDENTS
+-- 4.8 STUDENTS
 CREATE TABLE students (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   admission_number TEXT UNIQUE NOT NULL,
@@ -214,13 +224,16 @@ CREATE TABLE students (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- FKs: profiles → students/staff
-ALTER TABLE profiles ADD CONSTRAINT profiles_student_fk
+-- Now add FKs: profiles.student_id → students.id, profiles.staff_id → staff.id
+ALTER TABLE profiles
+  ADD CONSTRAINT profiles_student_fk
   FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE SET NULL;
-ALTER TABLE profiles ADD CONSTRAINT profiles_staff_fk
+
+ALTER TABLE profiles
+  ADD CONSTRAINT profiles_staff_fk
   FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE SET NULL;
 
--- STUDENT_ATTENDANCE
+-- 4.9 STUDENT_ATTENDANCE
 CREATE TABLE student_attendance (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
@@ -231,7 +244,7 @@ CREATE TABLE student_attendance (
   UNIQUE(student_id, date)
 );
 
--- STAFF_ATTENDANCE
+-- 4.10 STAFF_ATTENDANCE
 CREATE TABLE staff_attendance (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   staff_id UUID NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
@@ -243,7 +256,7 @@ CREATE TABLE staff_attendance (
   UNIQUE(staff_id, date)
 );
 
--- TIMETABLE_SLOTS
+-- 4.11 TIMETABLE_SLOTS
 CREATE TABLE timetable_slots (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   class_id UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
@@ -257,7 +270,7 @@ CREATE TABLE timetable_slots (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- EXAMS
+-- 4.12 EXAMS
 CREATE TABLE exams (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name TEXT NOT NULL,
@@ -270,7 +283,7 @@ CREATE TABLE exams (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- EXAM_RESULTS
+-- 4.13 EXAM_RESULTS
 CREATE TABLE exam_results (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   exam_id UUID NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
@@ -284,7 +297,7 @@ CREATE TABLE exam_results (
   UNIQUE(exam_id, student_id, subject_id)
 );
 
--- HOMEWORK
+-- 4.14 HOMEWORK
 CREATE TABLE homework (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   class_id UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
@@ -299,7 +312,7 @@ CREATE TABLE homework (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- FEE_STRUCTURES
+-- 4.15 FEE_STRUCTURES
 CREATE TABLE fee_structures (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name TEXT NOT NULL,
@@ -311,7 +324,7 @@ CREATE TABLE fee_structures (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- FEE_ITEMS
+-- 4.16 FEE_ITEMS
 CREATE TABLE fee_items (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   fee_structure_id UUID NOT NULL REFERENCES fee_structures(id) ON DELETE CASCADE,
@@ -319,7 +332,7 @@ CREATE TABLE fee_items (
   amount DECIMAL(12,2) DEFAULT 0
 );
 
--- STUDENT_FEES
+-- 4.17 STUDENT_FEES
 CREATE TABLE student_fees (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
@@ -332,7 +345,7 @@ CREATE TABLE student_fees (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- FEE_PAYMENTS
+-- 4.18 FEE_PAYMENTS
 CREATE TABLE fee_payments (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   student_fee_id UUID NOT NULL REFERENCES student_fees(id) ON DELETE CASCADE,
@@ -346,7 +359,7 @@ CREATE TABLE fee_payments (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- LIBRARY_BOOKS
+-- 4.19 LIBRARY_BOOKS
 CREATE TABLE library_books (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   title TEXT NOT NULL,
@@ -362,7 +375,7 @@ CREATE TABLE library_books (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- BOOK_ISSUES
+-- 4.20 BOOK_ISSUES
 CREATE TABLE book_issues (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   book_id UUID NOT NULL REFERENCES library_books(id) ON DELETE CASCADE,
@@ -377,7 +390,7 @@ CREATE TABLE book_issues (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- TRANSPORT_ROUTES
+-- 4.21 TRANSPORT_ROUTES
 CREATE TABLE transport_routes (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name TEXT NOT NULL,
@@ -387,7 +400,7 @@ CREATE TABLE transport_routes (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- VEHICLES
+-- 4.22 VEHICLES
 CREATE TABLE vehicles (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   bus_number TEXT NOT NULL,
@@ -399,7 +412,7 @@ CREATE TABLE vehicles (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- STUDENT_TRANSPORT
+-- 4.23 STUDENT_TRANSPORT
 CREATE TABLE student_transport (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
@@ -409,7 +422,7 @@ CREATE TABLE student_transport (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- STAFF_LEAVES
+-- 4.24 STAFF_LEAVES
 CREATE TABLE staff_leaves (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   staff_id UUID NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
@@ -422,7 +435,7 @@ CREATE TABLE staff_leaves (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- PAYROLLS
+-- 4.25 PAYROLLS
 CREATE TABLE payrolls (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   staff_id UUID NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
@@ -438,7 +451,7 @@ CREATE TABLE payrolls (
   UNIQUE(staff_id, month, year)
 );
 
--- NOTICES
+-- 4.26 NOTICES
 CREATE TABLE notices (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   title TEXT NOT NULL,
@@ -452,7 +465,7 @@ CREATE TABLE notices (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- SCHOOL_EVENTS
+-- 4.27 SCHOOL_EVENTS
 CREATE TABLE school_events (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   title TEXT NOT NULL,
@@ -464,7 +477,7 @@ CREATE TABLE school_events (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- CERTIFICATES
+-- 4.28 CERTIFICATES
 CREATE TABLE certificates (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
@@ -478,7 +491,7 @@ CREATE TABLE certificates (
 );
 
 -- ============================================================================
--- 4. INDEXES
+-- STEP 5: INDEXES (for query performance)
 -- ============================================================================
 CREATE INDEX idx_profiles_school ON profiles(school_id);
 CREATE INDEX idx_profiles_role ON profiles(role);
@@ -496,8 +509,10 @@ CREATE INDEX idx_notices_school ON notices(school_id);
 CREATE INDEX idx_timetable_class_section ON timetable_slots(class_id, section_id);
 
 -- ============================================================================
--- 5. TRIGGERS
+-- STEP 6: TRIGGERS
 -- ============================================================================
+
+-- Function: auto-update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -506,17 +521,28 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_schools_updated BEFORE UPDATE ON schools FOR EACH ROW EXECUTE FUNCTION update_updated_at();
-CREATE TRIGGER trg_profiles_updated BEFORE UPDATE ON profiles FOR EACH ROW EXECUTE FUNCTION update_updated_at();
-CREATE TRIGGER trg_staff_updated BEFORE UPDATE ON staff FOR EACH ROW EXECUTE FUNCTION update_updated_at();
-CREATE TRIGGER trg_students_updated BEFORE UPDATE ON students FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+CREATE TRIGGER trg_schools_updated BEFORE UPDATE ON schools
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
--- Auto-create profile when user signs up via Supabase Auth
+CREATE TRIGGER trg_profiles_updated BEFORE UPDATE ON profiles
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER trg_staff_updated BEFORE UPDATE ON staff
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER trg_students_updated BEFORE UPDATE ON students
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- Function: auto-create profile when a user signs up via Supabase Auth
 CREATE OR REPLACE FUNCTION handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
   INSERT INTO public.profiles (id, email, name)
-  VALUES (NEW.id, NEW.email, COALESCE(NEW.raw_user_meta_data->>'name', split_part(NEW.email, '@', 1)));
+  VALUES (
+    NEW.id,
+    NEW.email,
+    COALESCE(NEW.raw_user_meta_data->>'name', split_part(NEW.email, '@', 1))
+  );
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
@@ -526,7 +552,7 @@ CREATE TRIGGER on_auth_user_created
   FOR EACH ROW EXECUTE FUNCTION handle_new_user();
 
 -- ============================================================================
--- 6. RLS — Enable on all tables
+-- STEP 7: ROW LEVEL SECURITY (RLS) — Enable on all tables
 -- ============================================================================
 ALTER TABLE schools ENABLE ROW LEVEL SECURITY;
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
@@ -558,7 +584,7 @@ ALTER TABLE school_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE certificates ENABLE ROW LEVEL SECURITY;
 
 -- ============================================================================
--- 7. HELPER FUNCTIONS
+-- STEP 8: HELPER FUNCTIONS (used in RLS policies)
 -- ============================================================================
 CREATE OR REPLACE FUNCTION get_current_school_id()
 RETURNS UUID AS $$
@@ -586,175 +612,292 @@ RETURNS UUID AS $$
 $$ LANGUAGE sql SECURITY DEFINER STABLE;
 
 -- ============================================================================
--- 8. RLS POLICIES
+-- STEP 9: RLS POLICIES (role-based access control)
 -- ============================================================================
+-- Each table gets SELECT/INSERT/UPDATE/DELETE policies based on user role.
 
 -- SCHOOLS
-CREATE POLICY schools_select ON schools FOR SELECT USING (get_current_role() = 'super_admin' OR id = get_current_school_id());
-CREATE POLICY schools_insert ON schools FOR INSERT WITH CHECK (get_current_role() = 'super_admin');
-CREATE POLICY schools_update ON schools FOR UPDATE USING (get_current_role() = 'super_admin');
-CREATE POLICY schools_delete ON schools FOR DELETE USING (get_current_role() = 'super_admin');
+CREATE POLICY schools_select ON schools FOR SELECT
+  USING (get_current_role() = 'super_admin' OR id = get_current_school_id());
+CREATE POLICY schools_insert ON schools FOR INSERT
+  WITH CHECK (get_current_role() = 'super_admin');
+CREATE POLICY schools_update ON schools FOR UPDATE
+  USING (get_current_role() = 'super_admin');
+CREATE POLICY schools_delete ON schools FOR DELETE
+  USING (get_current_role() = 'super_admin');
 
 -- PROFILES
-CREATE POLICY profiles_select ON profiles FOR SELECT USING (id = auth.uid() OR (is_admin() AND school_id = get_current_school_id()));
-CREATE POLICY profiles_insert ON profiles FOR INSERT WITH CHECK (is_admin());
-CREATE POLICY profiles_update ON profiles FOR UPDATE USING (is_admin() OR id = auth.uid());
-CREATE POLICY profiles_delete ON profiles FOR DELETE USING (is_admin());
+CREATE POLICY profiles_select ON profiles FOR SELECT
+  USING (id = auth.uid() OR (is_admin() AND school_id = get_current_school_id()));
+CREATE POLICY profiles_insert ON profiles FOR INSERT
+  WITH CHECK (is_admin());
+CREATE POLICY profiles_update ON profiles FOR UPDATE
+  USING (is_admin() OR id = auth.uid());
+CREATE POLICY profiles_delete ON profiles FOR DELETE
+  USING (is_admin());
 
 -- CLASSES
-CREATE POLICY classes_select ON classes FOR SELECT USING (school_id = get_current_school_id());
-CREATE POLICY classes_insert ON classes FOR INSERT WITH CHECK (is_admin() AND school_id = get_current_school_id());
-CREATE POLICY classes_update ON classes FOR UPDATE USING (is_admin() AND school_id = get_current_school_id());
-CREATE POLICY classes_delete ON classes FOR DELETE USING (is_admin() AND school_id = get_current_school_id());
+CREATE POLICY classes_select ON classes FOR SELECT
+  USING (school_id = get_current_school_id());
+CREATE POLICY classes_insert ON classes FOR INSERT
+  WITH CHECK (is_admin() AND school_id = get_current_school_id());
+CREATE POLICY classes_update ON classes FOR UPDATE
+  USING (is_admin() AND school_id = get_current_school_id());
+CREATE POLICY classes_delete ON classes FOR DELETE
+  USING (is_admin() AND school_id = get_current_school_id());
 
 -- SECTIONS
-CREATE POLICY sections_select ON sections FOR SELECT USING (class_id IN (SELECT id FROM classes WHERE school_id = get_current_school_id()));
-CREATE POLICY sections_insert ON sections FOR INSERT WITH CHECK (is_admin());
-CREATE POLICY sections_update ON sections FOR UPDATE USING (is_admin());
-CREATE POLICY sections_delete ON sections FOR DELETE USING (is_admin());
+CREATE POLICY sections_select ON sections FOR SELECT
+  USING (class_id IN (SELECT id FROM classes WHERE school_id = get_current_school_id()));
+CREATE POLICY sections_insert ON sections FOR INSERT
+  WITH CHECK (is_admin());
+CREATE POLICY sections_update ON sections FOR UPDATE
+  USING (is_admin());
+CREATE POLICY sections_delete ON sections FOR DELETE
+  USING (is_admin());
 
 -- SUBJECTS
-CREATE POLICY subjects_select ON subjects FOR SELECT USING (school_id = get_current_school_id());
-CREATE POLICY subjects_insert ON subjects FOR INSERT WITH CHECK (is_admin() AND school_id = get_current_school_id());
-CREATE POLICY subjects_update ON subjects FOR UPDATE USING (is_admin() AND school_id = get_current_school_id());
-CREATE POLICY subjects_delete ON subjects FOR DELETE USING (is_admin() AND school_id = get_current_school_id());
+CREATE POLICY subjects_select ON subjects FOR SELECT
+  USING (school_id = get_current_school_id());
+CREATE POLICY subjects_insert ON subjects FOR INSERT
+  WITH CHECK (is_admin() AND school_id = get_current_school_id());
+CREATE POLICY subjects_update ON subjects FOR UPDATE
+  USING (is_admin() AND school_id = get_current_school_id());
+CREATE POLICY subjects_delete ON subjects FOR DELETE
+  USING (is_admin() AND school_id = get_current_school_id());
 
 -- CLASS_SUBJECTS
-CREATE POLICY cs_select ON class_subjects FOR SELECT USING (class_id IN (SELECT id FROM classes WHERE school_id = get_current_school_id()));
-CREATE POLICY cs_insert ON class_subjects FOR INSERT WITH CHECK (is_admin());
-CREATE POLICY cs_delete ON class_subjects FOR DELETE USING (is_admin());
+CREATE POLICY cs_select ON class_subjects FOR SELECT
+  USING (class_id IN (SELECT id FROM classes WHERE school_id = get_current_school_id()));
+CREATE POLICY cs_insert ON class_subjects FOR INSERT
+  WITH CHECK (is_admin());
+CREATE POLICY cs_delete ON class_subjects FOR DELETE
+  USING (is_admin());
 
 -- STAFF
-CREATE POLICY staff_select ON staff FOR SELECT USING (school_id = get_current_school_id());
-CREATE POLICY staff_insert ON staff FOR INSERT WITH CHECK (is_admin() AND school_id = get_current_school_id());
-CREATE POLICY staff_update ON staff FOR UPDATE USING (is_admin() AND school_id = get_current_school_id());
-CREATE POLICY staff_delete ON staff FOR DELETE USING (is_admin() AND school_id = get_current_school_id());
+CREATE POLICY staff_select ON staff FOR SELECT
+  USING (school_id = get_current_school_id());
+CREATE POLICY staff_insert ON staff FOR INSERT
+  WITH CHECK (is_admin() AND school_id = get_current_school_id());
+CREATE POLICY staff_update ON staff FOR UPDATE
+  USING (is_admin() AND school_id = get_current_school_id());
+CREATE POLICY staff_delete ON staff FOR DELETE
+  USING (is_admin() AND school_id = get_current_school_id());
 
 -- STUDENTS
-CREATE POLICY students_select ON students FOR SELECT USING (school_id = get_current_school_id() OR id = get_current_student_id());
-CREATE POLICY students_insert ON students FOR INSERT WITH CHECK ((is_admin() OR get_current_role() = 'accountant') AND school_id = get_current_school_id());
-CREATE POLICY students_update ON students FOR UPDATE USING ((is_admin() OR get_current_role() = 'accountant') AND school_id = get_current_school_id());
-CREATE POLICY students_delete ON students FOR DELETE USING (is_admin() AND school_id = get_current_school_id());
+CREATE POLICY students_select ON students FOR SELECT
+  USING (school_id = get_current_school_id() OR id = get_current_student_id());
+CREATE POLICY students_insert ON students FOR INSERT
+  WITH CHECK ((is_admin() OR get_current_role() = 'accountant') AND school_id = get_current_school_id());
+CREATE POLICY students_update ON students FOR UPDATE
+  USING ((is_admin() OR get_current_role() = 'accountant') AND school_id = get_current_school_id());
+CREATE POLICY students_delete ON students FOR DELETE
+  USING (is_admin() AND school_id = get_current_school_id());
 
 -- STUDENT_ATTENDANCE
-CREATE POLICY sa_select ON student_attendance FOR SELECT USING (student_id IN (SELECT id FROM students WHERE school_id = get_current_school_id()) OR student_id = get_current_student_id());
-CREATE POLICY sa_insert ON student_attendance FOR INSERT WITH CHECK (get_current_role() IN ('teacher', 'school_admin', 'super_admin', 'hr') AND student_id IN (SELECT id FROM students WHERE school_id = get_current_school_id()));
-CREATE POLICY sa_update ON student_attendance FOR UPDATE USING (get_current_role() IN ('teacher', 'school_admin', 'super_admin', 'hr'));
+CREATE POLICY sa_select ON student_attendance FOR SELECT
+  USING (student_id IN (SELECT id FROM students WHERE school_id = get_current_school_id()) OR student_id = get_current_student_id());
+CREATE POLICY sa_insert ON student_attendance FOR INSERT
+  WITH CHECK (get_current_role() IN ('teacher', 'school_admin', 'super_admin', 'hr') AND student_id IN (SELECT id FROM students WHERE school_id = get_current_school_id()));
+CREATE POLICY sa_update ON student_attendance FOR UPDATE
+  USING (get_current_role() IN ('teacher', 'school_admin', 'super_admin', 'hr'));
 
 -- STAFF_ATTENDANCE
-CREATE POLICY sta_select ON staff_attendance FOR SELECT USING (staff_id IN (SELECT id FROM staff WHERE school_id = get_current_school_id()));
-CREATE POLICY sta_insert ON staff_attendance FOR INSERT WITH CHECK (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
-CREATE POLICY sta_update ON staff_attendance FOR UPDATE USING (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
+CREATE POLICY sta_select ON staff_attendance FOR SELECT
+  USING (staff_id IN (SELECT id FROM staff WHERE school_id = get_current_school_id()));
+CREATE POLICY sta_insert ON staff_attendance FOR INSERT
+  WITH CHECK (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
+CREATE POLICY sta_update ON staff_attendance FOR UPDATE
+  USING (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
 
 -- TIMETABLE_SLOTS
-CREATE POLICY ts_select ON timetable_slots FOR SELECT USING (class_id IN (SELECT id FROM classes WHERE school_id = get_current_school_id()));
-CREATE POLICY ts_insert ON timetable_slots FOR INSERT WITH CHECK (get_current_role() IN ('school_admin', 'super_admin', 'hr') AND class_id IN (SELECT id FROM classes WHERE school_id = get_current_school_id()));
-CREATE POLICY ts_update ON timetable_slots FOR UPDATE USING (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
-CREATE POLICY ts_delete ON timetable_slots FOR DELETE USING (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
+CREATE POLICY ts_select ON timetable_slots FOR SELECT
+  USING (class_id IN (SELECT id FROM classes WHERE school_id = get_current_school_id()));
+CREATE POLICY ts_insert ON timetable_slots FOR INSERT
+  WITH CHECK (get_current_role() IN ('school_admin', 'super_admin', 'hr') AND class_id IN (SELECT id FROM classes WHERE school_id = get_current_school_id()));
+CREATE POLICY ts_update ON timetable_slots FOR UPDATE
+  USING (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
+CREATE POLICY ts_delete ON timetable_slots FOR DELETE
+  USING (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
 
 -- EXAMS
-CREATE POLICY exams_select ON exams FOR SELECT USING (school_id = get_current_school_id());
-CREATE POLICY exams_insert ON exams FOR INSERT WITH CHECK (is_admin() AND school_id = get_current_school_id());
-CREATE POLICY exams_update ON exams FOR UPDATE USING (is_admin() AND school_id = get_current_school_id());
-CREATE POLICY exams_delete ON exams FOR DELETE USING (is_admin() AND school_id = get_current_school_id());
+CREATE POLICY exams_select ON exams FOR SELECT
+  USING (school_id = get_current_school_id());
+CREATE POLICY exams_insert ON exams FOR INSERT
+  WITH CHECK (is_admin() AND school_id = get_current_school_id());
+CREATE POLICY exams_update ON exams FOR UPDATE
+  USING (is_admin() AND school_id = get_current_school_id());
+CREATE POLICY exams_delete ON exams FOR DELETE
+  USING (is_admin() AND school_id = get_current_school_id());
 
 -- EXAM_RESULTS
-CREATE POLICY er_select ON exam_results FOR SELECT USING (exam_id IN (SELECT id FROM exams WHERE school_id = get_current_school_id()) OR student_id = get_current_student_id());
-CREATE POLICY er_insert ON exam_results FOR INSERT WITH CHECK (get_current_role() IN ('teacher', 'school_admin', 'super_admin'));
-CREATE POLICY er_update ON exam_results FOR UPDATE USING (get_current_role() IN ('teacher', 'school_admin', 'super_admin'));
-CREATE POLICY er_delete ON exam_results FOR DELETE USING (is_admin());
+CREATE POLICY er_select ON exam_results FOR SELECT
+  USING (exam_id IN (SELECT id FROM exams WHERE school_id = get_current_school_id()) OR student_id = get_current_student_id());
+CREATE POLICY er_insert ON exam_results FOR INSERT
+  WITH CHECK (get_current_role() IN ('teacher', 'school_admin', 'super_admin'));
+CREATE POLICY er_update ON exam_results FOR UPDATE
+  USING (get_current_role() IN ('teacher', 'school_admin', 'super_admin'));
+CREATE POLICY er_delete ON exam_results FOR DELETE
+  USING (is_admin());
 
 -- HOMEWORK
-CREATE POLICY hw_select ON homework FOR SELECT USING (school_id = get_current_school_id());
-CREATE POLICY hw_insert ON homework FOR INSERT WITH CHECK (get_current_role() IN ('teacher', 'school_admin', 'super_admin') AND school_id = get_current_school_id());
-CREATE POLICY hw_update ON homework FOR UPDATE USING (get_current_role() IN ('teacher', 'school_admin', 'super_admin'));
-CREATE POLICY hw_delete ON homework FOR DELETE USING (is_admin());
+CREATE POLICY hw_select ON homework FOR SELECT
+  USING (school_id = get_current_school_id());
+CREATE POLICY hw_insert ON homework FOR INSERT
+  WITH CHECK (get_current_role() IN ('teacher', 'school_admin', 'super_admin') AND school_id = get_current_school_id());
+CREATE POLICY hw_update ON homework FOR UPDATE
+  USING (get_current_role() IN ('teacher', 'school_admin', 'super_admin'));
+CREATE POLICY hw_delete ON homework FOR DELETE
+  USING (is_admin());
 
 -- FEE_STRUCTURES
-CREATE POLICY fs_select ON fee_structures FOR SELECT USING (school_id = get_current_school_id());
-CREATE POLICY fs_insert ON fee_structures FOR INSERT WITH CHECK ((is_admin() OR get_current_role() = 'accountant') AND school_id = get_current_school_id());
-CREATE POLICY fs_update ON fee_structures FOR UPDATE USING (is_admin() OR get_current_role() = 'accountant');
-CREATE POLICY fs_delete ON fee_structures FOR DELETE USING (is_admin());
+CREATE POLICY fs_select ON fee_structures FOR SELECT
+  USING (school_id = get_current_school_id());
+CREATE POLICY fs_insert ON fee_structures FOR INSERT
+  WITH CHECK ((is_admin() OR get_current_role() = 'accountant') AND school_id = get_current_school_id());
+CREATE POLICY fs_update ON fee_structures FOR UPDATE
+  USING (is_admin() OR get_current_role() = 'accountant');
+CREATE POLICY fs_delete ON fee_structures FOR DELETE
+  USING (is_admin());
 
 -- FEE_ITEMS
-CREATE POLICY fi_select ON fee_items FOR SELECT USING (fee_structure_id IN (SELECT id FROM fee_structures WHERE school_id = get_current_school_id()));
-CREATE POLICY fi_insert ON fee_items FOR INSERT WITH CHECK (is_admin() OR get_current_role() = 'accountant');
-CREATE POLICY fi_update ON fee_items FOR UPDATE USING (is_admin() OR get_current_role() = 'accountant');
-CREATE POLICY fi_delete ON fee_items FOR DELETE USING (is_admin());
+CREATE POLICY fi_select ON fee_items FOR SELECT
+  USING (fee_structure_id IN (SELECT id FROM fee_structures WHERE school_id = get_current_school_id()));
+CREATE POLICY fi_insert ON fee_items FOR INSERT
+  WITH CHECK (is_admin() OR get_current_role() = 'accountant');
+CREATE POLICY fi_update ON fee_items FOR UPDATE
+  USING (is_admin() OR get_current_role() = 'accountant');
+CREATE POLICY fi_delete ON fee_items FOR DELETE
+  USING (is_admin());
 
 -- STUDENT_FEES
-CREATE POLICY sf_select ON student_fees FOR SELECT USING (student_id IN (SELECT id FROM students WHERE school_id = get_current_school_id()) OR student_id = get_current_student_id());
-CREATE POLICY sf_insert ON student_fees FOR INSERT WITH CHECK (is_admin() OR get_current_role() = 'accountant');
-CREATE POLICY sf_update ON student_fees FOR UPDATE USING (is_admin() OR get_current_role() = 'accountant');
-CREATE POLICY sf_delete ON student_fees FOR DELETE USING (is_admin());
+CREATE POLICY sf_select ON student_fees FOR SELECT
+  USING (student_id IN (SELECT id FROM students WHERE school_id = get_current_school_id()) OR student_id = get_current_student_id());
+CREATE POLICY sf_insert ON student_fees FOR INSERT
+  WITH CHECK (is_admin() OR get_current_role() = 'accountant');
+CREATE POLICY sf_update ON student_fees FOR UPDATE
+  USING (is_admin() OR get_current_role() = 'accountant');
+CREATE POLICY sf_delete ON student_fees FOR DELETE
+  USING (is_admin());
 
 -- FEE_PAYMENTS
-CREATE POLICY fp_select ON fee_payments FOR SELECT USING (student_fee_id IN (SELECT sf.id FROM student_fees sf JOIN students s ON sf.student_id = s.id WHERE s.school_id = get_current_school_id()));
-CREATE POLICY fp_insert ON fee_payments FOR INSERT WITH CHECK (is_admin() OR get_current_role() = 'accountant');
-CREATE POLICY fp_update ON fee_payments FOR UPDATE USING (is_admin() OR get_current_role() = 'accountant');
-CREATE POLICY fp_delete ON fee_payments FOR DELETE USING (is_admin());
+CREATE POLICY fp_select ON fee_payments FOR SELECT
+  USING (student_fee_id IN (SELECT sf.id FROM student_fees sf JOIN students s ON sf.student_id = s.id WHERE s.school_id = get_current_school_id()));
+CREATE POLICY fp_insert ON fee_payments FOR INSERT
+  WITH CHECK (is_admin() OR get_current_role() = 'accountant');
+CREATE POLICY fp_update ON fee_payments FOR UPDATE
+  USING (is_admin() OR get_current_role() = 'accountant');
+CREATE POLICY fp_delete ON fee_payments FOR DELETE
+  USING (is_admin());
 
 -- LIBRARY_BOOKS
-CREATE POLICY lb_select ON library_books FOR SELECT USING (school_id = get_current_school_id());
-CREATE POLICY lb_insert ON library_books FOR INSERT WITH CHECK ((is_admin() OR get_current_role() = 'librarian') AND school_id = get_current_school_id());
-CREATE POLICY lb_update ON library_books FOR UPDATE USING (is_admin() OR get_current_role() = 'librarian');
-CREATE POLICY lb_delete ON library_books FOR DELETE USING (is_admin());
+CREATE POLICY lb_select ON library_books FOR SELECT
+  USING (school_id = get_current_school_id());
+CREATE POLICY lb_insert ON library_books FOR INSERT
+  WITH CHECK ((is_admin() OR get_current_role() = 'librarian') AND school_id = get_current_school_id());
+CREATE POLICY lb_update ON library_books FOR UPDATE
+  USING (is_admin() OR get_current_role() = 'librarian');
+CREATE POLICY lb_delete ON library_books FOR DELETE
+  USING (is_admin());
 
 -- BOOK_ISSUES
-CREATE POLICY bi_select ON book_issues FOR SELECT USING (book_id IN (SELECT id FROM library_books WHERE school_id = get_current_school_id()));
-CREATE POLICY bi_insert ON book_issues FOR INSERT WITH CHECK (is_admin() OR get_current_role() = 'librarian');
-CREATE POLICY bi_update ON book_issues FOR UPDATE USING (is_admin() OR get_current_role() = 'librarian');
-CREATE POLICY bi_delete ON book_issues FOR DELETE USING (is_admin());
+CREATE POLICY bi_select ON book_issues FOR SELECT
+  USING (book_id IN (SELECT id FROM library_books WHERE school_id = get_current_school_id()));
+CREATE POLICY bi_insert ON book_issues FOR INSERT
+  WITH CHECK (is_admin() OR get_current_role() = 'librarian');
+CREATE POLICY bi_update ON book_issues FOR UPDATE
+  USING (is_admin() OR get_current_role() = 'librarian');
+CREATE POLICY bi_delete ON book_issues FOR DELETE
+  USING (is_admin());
 
 -- TRANSPORT_ROUTES
-CREATE POLICY tr_select ON transport_routes FOR SELECT USING (school_id = get_current_school_id());
-CREATE POLICY tr_insert ON transport_routes FOR INSERT WITH CHECK ((is_admin() OR get_current_role() = 'transport_manager') AND school_id = get_current_school_id());
-CREATE POLICY tr_update ON transport_routes FOR UPDATE USING (is_admin() OR get_current_role() = 'transport_manager');
-CREATE POLICY tr_delete ON transport_routes FOR DELETE USING (is_admin());
+CREATE POLICY tr_select ON transport_routes FOR SELECT
+  USING (school_id = get_current_school_id());
+CREATE POLICY tr_insert ON transport_routes FOR INSERT
+  WITH CHECK ((is_admin() OR get_current_role() = 'transport_manager') AND school_id = get_current_school_id());
+CREATE POLICY tr_update ON transport_routes FOR UPDATE
+  USING (is_admin() OR get_current_role() = 'transport_manager');
+CREATE POLICY tr_delete ON transport_routes FOR DELETE
+  USING (is_admin());
 
 -- VEHICLES
-CREATE POLICY veh_select ON vehicles FOR SELECT USING (school_id = get_current_school_id());
-CREATE POLICY veh_insert ON vehicles FOR INSERT WITH CHECK ((is_admin() OR get_current_role() = 'transport_manager') AND school_id = get_current_school_id());
-CREATE POLICY veh_update ON vehicles FOR UPDATE USING (is_admin() OR get_current_role() = 'transport_manager');
-CREATE POLICY veh_delete ON vehicles FOR DELETE USING (is_admin());
+CREATE POLICY veh_select ON vehicles FOR SELECT
+  USING (school_id = get_current_school_id());
+CREATE POLICY veh_insert ON vehicles FOR INSERT
+  WITH CHECK ((is_admin() OR get_current_role() = 'transport_manager') AND school_id = get_current_school_id());
+CREATE POLICY veh_update ON vehicles FOR UPDATE
+  USING (is_admin() OR get_current_role() = 'transport_manager');
+CREATE POLICY veh_delete ON vehicles FOR DELETE
+  USING (is_admin());
 
 -- STUDENT_TRANSPORT
-CREATE POLICY st_select ON student_transport FOR SELECT USING (student_id IN (SELECT id FROM students WHERE school_id = get_current_school_id()) OR student_id = get_current_student_id());
-CREATE POLICY st_insert ON student_transport FOR INSERT WITH CHECK (is_admin() OR get_current_role() = 'transport_manager');
-CREATE POLICY st_update ON student_transport FOR UPDATE USING (is_admin() OR get_current_role() = 'transport_manager');
-CREATE POLICY st_delete ON student_transport FOR DELETE USING (is_admin());
+CREATE POLICY st_select ON student_transport FOR SELECT
+  USING (student_id IN (SELECT id FROM students WHERE school_id = get_current_school_id()) OR student_id = get_current_student_id());
+CREATE POLICY st_insert ON student_transport FOR INSERT
+  WITH CHECK (is_admin() OR get_current_role() = 'transport_manager');
+CREATE POLICY st_update ON student_transport FOR UPDATE
+  USING (is_admin() OR get_current_role() = 'transport_manager');
+CREATE POLICY st_delete ON student_transport FOR DELETE
+  USING (is_admin());
 
 -- STAFF_LEAVES
-CREATE POLICY sl_select ON staff_leaves FOR SELECT USING (staff_id IN (SELECT id FROM staff WHERE school_id = get_current_school_id()) OR staff_id = get_current_staff_id());
-CREATE POLICY sl_insert ON staff_leaves FOR INSERT WITH CHECK (get_current_role() IN ('school_admin', 'super_admin', 'teacher', 'hr'));
-CREATE POLICY sl_update ON staff_leaves FOR UPDATE USING (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
-CREATE POLICY sl_delete ON staff_leaves FOR DELETE USING (is_admin());
+CREATE POLICY sl_select ON staff_leaves FOR SELECT
+  USING (staff_id IN (SELECT id FROM staff WHERE school_id = get_current_school_id()) OR staff_id = get_current_staff_id());
+CREATE POLICY sl_insert ON staff_leaves FOR INSERT
+  WITH CHECK (get_current_role() IN ('school_admin', 'super_admin', 'teacher', 'hr'));
+CREATE POLICY sl_update ON staff_leaves FOR UPDATE
+  USING (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
+CREATE POLICY sl_delete ON staff_leaves FOR DELETE
+  USING (is_admin());
 
 -- PAYROLLS
-CREATE POLICY pay_select ON payrolls FOR SELECT USING (staff_id IN (SELECT id FROM staff WHERE school_id = get_current_school_id()) OR staff_id = get_current_staff_id());
-CREATE POLICY pay_insert ON payrolls FOR INSERT WITH CHECK (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
-CREATE POLICY pay_update ON payrolls FOR UPDATE USING (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
-CREATE POLICY pay_delete ON payrolls FOR DELETE USING (is_admin());
+CREATE POLICY pay_select ON payrolls FOR SELECT
+  USING (staff_id IN (SELECT id FROM staff WHERE school_id = get_current_school_id()) OR staff_id = get_current_staff_id());
+CREATE POLICY pay_insert ON payrolls FOR INSERT
+  WITH CHECK (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
+CREATE POLICY pay_update ON payrolls FOR UPDATE
+  USING (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
+CREATE POLICY pay_delete ON payrolls FOR DELETE
+  USING (is_admin());
 
 -- NOTICES
-CREATE POLICY notices_select ON notices FOR SELECT USING (school_id = get_current_school_id() AND (target_audience = 'all' OR (target_audience = 'class' AND target_class_id IN (SELECT class_id FROM students WHERE id = get_current_student_id())) OR (target_audience = 'role' AND target_role = get_current_role()) OR is_admin()));
-CREATE POLICY notices_insert ON notices FOR INSERT WITH CHECK (get_current_role() IN ('school_admin', 'super_admin', 'teacher') AND school_id = get_current_school_id());
-CREATE POLICY notices_update ON notices FOR UPDATE USING (get_current_role() IN ('school_admin', 'super_admin', 'teacher'));
-CREATE POLICY notices_delete ON notices FOR DELETE USING (is_admin());
+CREATE POLICY notices_select ON notices FOR SELECT
+  USING (
+    school_id = get_current_school_id()
+    AND (
+      target_audience = 'all'
+      OR (target_audience = 'class' AND target_class_id IN (SELECT class_id FROM students WHERE id = get_current_student_id()))
+      OR (target_audience = 'role' AND target_role = get_current_role())
+      OR is_admin()
+    )
+  );
+CREATE POLICY notices_insert ON notices FOR INSERT
+  WITH CHECK (get_current_role() IN ('school_admin', 'super_admin', 'teacher') AND school_id = get_current_school_id());
+CREATE POLICY notices_update ON notices FOR UPDATE
+  USING (get_current_role() IN ('school_admin', 'super_admin', 'teacher'));
+CREATE POLICY notices_delete ON notices FOR DELETE
+  USING (is_admin());
 
 -- SCHOOL_EVENTS
-CREATE POLICY events_select ON school_events FOR SELECT USING (school_id = get_current_school_id());
-CREATE POLICY events_insert ON school_events FOR INSERT WITH CHECK (is_admin() AND school_id = get_current_school_id());
-CREATE POLICY events_update ON school_events FOR UPDATE USING (is_admin());
-CREATE POLICY events_delete ON school_events FOR DELETE USING (is_admin());
+CREATE POLICY events_select ON school_events FOR SELECT
+  USING (school_id = get_current_school_id());
+CREATE POLICY events_insert ON school_events FOR INSERT
+  WITH CHECK (is_admin() AND school_id = get_current_school_id());
+CREATE POLICY events_update ON school_events FOR UPDATE
+  USING (is_admin());
+CREATE POLICY events_delete ON school_events FOR DELETE
+  USING (is_admin());
 
 -- CERTIFICATES
-CREATE POLICY cert_select ON certificates FOR SELECT USING (school_id = get_current_school_id() OR student_id = get_current_student_id());
-CREATE POLICY cert_insert ON certificates FOR INSERT WITH CHECK (is_admin() AND school_id = get_current_school_id());
-CREATE POLICY cert_delete ON certificates FOR DELETE USING (is_admin());
+CREATE POLICY cert_select ON certificates FOR SELECT
+  USING (school_id = get_current_school_id() OR student_id = get_current_student_id());
+CREATE POLICY cert_insert ON certificates FOR INSERT
+  WITH CHECK (is_admin() AND school_id = get_current_school_id());
+CREATE POLICY cert_delete ON certificates FOR DELETE
+  USING (is_admin());
 
 -- ============================================================================
--- 9. STORAGE BUCKETS
+-- STEP 10: STORAGE BUCKETS (for file uploads)
 -- ============================================================================
 INSERT INTO storage.buckets (id, name, public) VALUES
   ('student-photos', 'student-photos', true),
@@ -764,26 +907,41 @@ INSERT INTO storage.buckets (id, name, public) VALUES
   ('documents', 'documents', false)
 ON CONFLICT (id) DO NOTHING;
 
-CREATE POLICY "Public read student-photos" ON storage.objects FOR SELECT USING (bucket_id = 'student-photos');
-CREATE POLICY "Admin write student-photos" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'student-photos' AND is_admin());
-CREATE POLICY "Public read staff-photos" ON storage.objects FOR SELECT USING (bucket_id = 'staff-photos');
-CREATE POLICY "Admin write staff-photos" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'staff-photos' AND is_admin());
-CREATE POLICY "Public read book-covers" ON storage.objects FOR SELECT USING (bucket_id = 'book-covers');
-CREATE POLICY "Admin write book-covers" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'book-covers' AND is_admin());
-CREATE POLICY "Auth read homework-attachments" ON storage.objects FOR SELECT USING (bucket_id = 'homework-attachments' AND auth.uid() IS NOT NULL);
-CREATE POLICY "Teacher write homework-attachments" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'homework-attachments' AND get_current_role() IN ('teacher', 'school_admin', 'super_admin'));
-CREATE POLICY "Auth read documents" ON storage.objects FOR SELECT USING (bucket_id = 'documents' AND auth.uid() IS NOT NULL);
-CREATE POLICY "Admin write documents" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'documents' AND is_admin());
+-- Storage policies
+CREATE POLICY "Public read student-photos" ON storage.objects FOR SELECT
+  USING (bucket_id = 'student-photos');
+CREATE POLICY "Admin write student-photos" ON storage.objects FOR INSERT
+  WITH CHECK (bucket_id = 'student-photos' AND is_admin());
+
+CREATE POLICY "Public read staff-photos" ON storage.objects FOR SELECT
+  USING (bucket_id = 'staff-photos');
+CREATE POLICY "Admin write staff-photos" ON storage.objects FOR INSERT
+  WITH CHECK (bucket_id = 'staff-photos' AND is_admin());
+
+CREATE POLICY "Public read book-covers" ON storage.objects FOR SELECT
+  USING (bucket_id = 'book-covers');
+CREATE POLICY "Admin write book-covers" ON storage.objects FOR INSERT
+  WITH CHECK (bucket_id = 'book-covers' AND is_admin());
+
+CREATE POLICY "Auth read homework-attachments" ON storage.objects FOR SELECT
+  USING (bucket_id = 'homework-attachments' AND auth.uid() IS NOT NULL);
+CREATE POLICY "Teacher write homework-attachments" ON storage.objects FOR INSERT
+  WITH CHECK (bucket_id = 'homework-attachments' AND get_current_role() IN ('teacher', 'school_admin', 'super_admin'));
+
+CREATE POLICY "Auth read documents" ON storage.objects FOR SELECT
+  USING (bucket_id = 'documents' AND auth.uid() IS NOT NULL);
+CREATE POLICY "Admin write documents" ON storage.objects FOR INSERT
+  WITH CHECK (bucket_id = 'documents' AND is_admin());
 
 -- ============================================================================
--- 10. SEED DATA
+-- STEP 11: SEED DATA
 -- ============================================================================
 
--- SCHOOL
+-- 11.1 SCHOOL
 INSERT INTO schools (id, name, address, phone, email, established_date) VALUES
   ('00000000-0000-0000-0000-000000000001', 'Greenwood International School', '123 Education Lane, Knowledge Park, New Delhi - 110001', '+91 98765 43210', 'info@greenwood.edu', '1998-06-15');
 
--- CLASSES
+-- 11.2 CLASSES (15 classes)
 INSERT INTO classes (id, name, "order", school_id) VALUES
   ('a0000000-0000-0000-0000-000000000001', 'Nursery', 1, '00000000-0000-0000-0000-000000000001'),
   ('a0000000-0000-0000-0000-000000000002', 'LKG', 2, '00000000-0000-0000-0000-000000000001'),
@@ -801,19 +959,22 @@ INSERT INTO classes (id, name, "order", school_id) VALUES
   ('a0000000-0000-0000-0000-00000000000e', 'Class 11', 14, '00000000-0000-0000-0000-000000000001'),
   ('a0000000-0000-0000-0000-00000000000f', 'Class 12', 15, '00000000-0000-0000-0000-000000000001');
 
--- SECTIONS (A, B for each class)
+-- 11.3 SECTIONS (A, B for each class) — using DO block
 DO $$
-DECLARE cls RECORD; sec_char CHAR(1); sec_order INT;
+DECLARE
+  cls RECORD;
+  sec_char CHAR(1);
+  sec_order INT;
 BEGIN
   FOR cls IN SELECT id FROM classes WHERE school_id = '00000000-0000-0000-0000-000000000001' LOOP
     FOR sec_order IN 1..2 LOOP
-      sec_char := CHR(64 + sec_order);
+      sec_char := CHR(64 + sec_order);  -- 'A' or 'B'
       INSERT INTO sections (class_id, name) VALUES (cls.id, sec_char);
     END LOOP;
   END LOOP;
 END $$;
 
--- SUBJECTS
+-- 11.4 SUBJECTS (12 subjects)
 INSERT INTO subjects (id, name, code, school_id) VALUES
   ('b0000000-0000-0000-0000-000000000001', 'English', 'ENG', '00000000-0000-0000-0000-000000000001'),
   ('b0000000-0000-0000-0000-000000000002', 'Mathematics', 'MATH', '00000000-0000-0000-0000-000000000001'),
@@ -828,9 +989,11 @@ INSERT INTO subjects (id, name, code, school_id) VALUES
   ('b0000000-0000-0000-0000-00000000000b', 'Art', 'ART', '00000000-0000-0000-0000-000000000001'),
   ('b0000000-0000-0000-0000-00000000000c', 'Music', 'MUS', '00000000-0000-0000-0000-000000000001');
 
--- CLASS_SUBJECTS
+-- 11.5 CLASS_SUBJECTS (assign first 6 subjects to each class)
 DO $$
-DECLARE cls RECORD; subj RECORD;
+DECLARE
+  cls RECORD;
+  subj RECORD;
 BEGIN
   FOR cls IN SELECT id FROM classes WHERE school_id = '00000000-0000-0000-0000-000000000001' LOOP
     FOR subj IN SELECT id FROM subjects WHERE school_id = '00000000-0000-0000-0000-000000000001' ORDER BY code LIMIT 6 LOOP
@@ -839,7 +1002,7 @@ BEGIN
   END LOOP;
 END $$;
 
--- STAFF
+-- 11.6 STAFF (12 staff members)
 INSERT INTO staff (id, employee_id, first_name, last_name, email, phone, designation, department, type, salary, school_id, status, qualification, joining_date) VALUES
   ('c0000000-0000-0000-0000-000000000001', 'EMP0001', 'Rajesh', 'Kumar', 'rajesh.kumar@greenwood.edu', '+91 9800000011', 'Principal', 'Administration', 'non_teaching', 120000, '00000000-0000-0000-0000-000000000001', 'active', 'M.Ed, B.Ed', '2010-06-15'),
   ('c0000000-0000-0000-0000-000000000002', 'EMP0002', 'Priya', 'Sharma', 'priya.sharma@greenwood.edu', '+91 9800000022', 'Vice Principal', 'Administration', 'non_teaching', 90000, '00000000-0000-0000-0000-000000000001', 'active', 'M.Ed', '2011-07-01'),
@@ -854,7 +1017,7 @@ INSERT INTO staff (id, employee_id, first_name, last_name, email, phone, designa
   ('c0000000-0000-0000-0000-00000000000b', 'EMP0011', 'Ramesh', 'Yadav', 'ramesh.yadav@greenwood.edu', '+91 9800000111', 'Transport Manager', 'Transport', 'non_teaching', 42000, '00000000-0000-0000-0000-000000000001', 'active', 'BBA', '2020-03-01'),
   ('c0000000-0000-0000-0000-00000000000c', 'EMP0012', 'Sunita', 'Joshi', 'sunita.joshi@greenwood.edu', '+91 9800000122', 'HR Manager', 'Human Resources', 'non_teaching', 46000, '00000000-0000-0000-0000-000000000001', 'active', 'MBA HR', '2021-06-01');
 
--- STUDENTS
+-- 11.7 STUDENTS (10 students)
 INSERT INTO students (id, admission_number, roll_number, first_name, last_name, email, phone, dob, gender, blood_group, address, class_id, section_id, status, school_id, father_name, mother_name, parent_phone, parent_email, admission_date) VALUES
   ('d0000000-0000-0000-0000-000000000001', 'GRW1001', '1', 'Aarav', 'Sharma', 'aarav.sharma@student.greenwood.edu', '+91 9900000001', '2015-05-10', 'male', 'A+', '101, Sector 5, New Delhi', 'a0000000-0000-0000-0000-000000000004', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000004' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Sharma', 'Mrs. Sharma', '+91 9900000011', 'parent.aarav@gmail.com', '2021-06-15'),
   ('d0000000-0000-0000-0000-000000000002', 'GRW1002', '2', 'Diya', 'Das', 'diya.das@student.greenwood.edu', '+91 9900000002', '2015-08-22', 'female', 'B+', '202, Sector 8, New Delhi', 'a0000000-0000-0000-0000-000000000004', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000004' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Das', 'Mrs. Das', '+91 9900000022', 'parent.diya@gmail.com', '2021-06-15'),
@@ -867,30 +1030,40 @@ INSERT INTO students (id, admission_number, roll_number, first_name, last_name, 
   ('d0000000-0000-0000-0000-000000000009', 'GRW1009', '9', 'Krishna', 'Joshi', 'krishna.joshi@student.greenwood.edu', '+91 9900000009', '2012-04-20', 'male', 'B+', '909, Sector 18, New Delhi', 'a0000000-0000-0000-0000-00000000000c', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000c' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Joshi', 'Mrs. Joshi', '+91 9900000099', 'parent.krishna@gmail.com', '2021-08-15'),
   ('d0000000-0000-0000-0000-00000000000a', 'GRW1010', '10', 'Ira', 'Mehta', 'ira.mehta@student.greenwood.edu', '+91 9900000010', '2012-10-08', 'female', 'AB+', '110, Sector 22, New Delhi', 'a0000000-0000-0000-0000-00000000000d', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000d' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Mehta', 'Mrs. Mehta', '+91 9900000100', 'parent.ira@gmail.com', '2021-08-15');
 
--- ATTENDANCE (last 7 days)
+-- 11.8 ATTENDANCE (last 7 days for all students)
 DO $$
-DECLARE d_offset INT; d_date TEXT; stu RECORD;
-  statuses TEXT[] := ARRAY['present','present','present','present','absent','late','leave'];
+DECLARE
+  d_offset INT;
+  d_date TEXT;
+  stu RECORD;
+  statuses TEXT[] := ARRAY['present', 'present', 'present', 'present', 'absent', 'late', 'leave'];
+  rand_idx INT;
 BEGIN
   FOR d_offset IN 0..6 LOOP
     d_date := to_char(current_date - d_offset, 'YYYY-MM-DD');
-    FOR stu IN SELECT id FROM students WHERE school_id='00000000-0000-0000-0000-000000000001' LOOP
+    FOR stu IN SELECT id FROM students WHERE school_id = '00000000-0000-0000-0000-000000000001' LOOP
+      rand_idx := (random() * 6 + 1)::INT;
       INSERT INTO student_attendance (student_id, date, status, marked_by)
-      VALUES (stu.id, d_date, statuses[(random() * 6 + 1)::INT]::attendance_status, 'system')
+      VALUES (stu.id, d_date, statuses[rand_idx]::attendance_status, 'system')
       ON CONFLICT (student_id, date) DO NOTHING;
     END LOOP;
   END LOOP;
 END $$;
 
--- FEE STRUCTURES (fixed — no boolean+integer mixing)
+-- 11.9 FEE STRUCTURES (one per class)
 DO $$
-DECLARE cls RECORD; total_amt DECIMAL; class_num INT;
+DECLARE
+  cls RECORD;
+  total_amt DECIMAL;
+  class_num INT;
 BEGIN
-  FOR cls IN SELECT id, name FROM classes WHERE school_id='00000000-0000-0000-0000-000000000001' LOOP
+  FOR cls IN SELECT id, name FROM classes WHERE school_id = '00000000-0000-0000-0000-000000000001' LOOP
+    -- Extract class number from name like "Class 10"
     class_num := 0;
     IF cls.name LIKE 'Class %' AND cls.name ~ '[0-9]+' THEN
       class_num := substring(cls.name FROM '[0-9]+')::INT;
     END IF;
+    -- Base fee 45000 + 1000 per class number
     total_amt := 45000 + (class_num * 1000);
     INSERT INTO fee_structures (name, class_id, school_id, term, total_amount, due_date)
     VALUES (cls.name || ' - Annual Fee 2024-25', cls.id, '00000000-0000-0000-0000-000000000001', 'Annual', total_amt, '2024-12-31')
@@ -898,16 +1071,34 @@ BEGIN
   END LOOP;
 END $$;
 
--- STUDENT FEES
+-- 11.10 STUDENT FEES (assign fee structure to each student)
 DO $$
-DECLARE stu RECORD; fs RECORD; paid_amt DECIMAL; due_amt DECIMAL; fee_st fee_status;
+DECLARE
+  stu RECORD;
+  fs RECORD;
+  paid_amt DECIMAL;
+  due_amt DECIMAL;
+  fee_st fee_status;
 BEGIN
-  FOR stu IN SELECT id, class_id FROM students WHERE school_id='00000000-0000-0000-0000-000000000001' LOOP
+  FOR stu IN SELECT id, class_id FROM students WHERE school_id = '00000000-0000-0000-0000-000000000001' LOOP
     SELECT * INTO fs FROM fee_structures WHERE class_id = stu.class_id LIMIT 1;
     IF FOUND THEN
-      paid_amt := CASE WHEN random() > 0.5 THEN fs.total_amount ELSE fs.total_amount * 0.5 END;
+      -- Random: 50% fully paid, 50% half paid
+      IF random() > 0.5 THEN
+        paid_amt := fs.total_amount;
+      ELSE
+        paid_amt := fs.total_amount * 0.5;
+      END IF;
       due_amt := fs.total_amount - paid_amt;
-      fee_st := CASE WHEN due_amt = 0 THEN 'paid'::fee_status WHEN paid_amt > 0 THEN 'partial'::fee_status ELSE 'pending'::fee_status END;
+      
+      IF due_amt = 0 THEN
+        fee_st := 'paid'::fee_status;
+      ELSIF paid_amt > 0 THEN
+        fee_st := 'partial'::fee_status;
+      ELSE
+        fee_st := 'pending'::fee_status;
+      END IF;
+      
       INSERT INTO student_fees (student_id, fee_structure_id, total_amount, paid_amount, due_amount, due_date, status)
       VALUES (stu.id, fs.id, fs.total_amount, paid_amt, due_amt, fs.due_date, fee_st)
       ON CONFLICT DO NOTHING;
@@ -915,7 +1106,7 @@ BEGIN
   END LOOP;
 END $$;
 
--- LIBRARY BOOKS
+-- 11.11 LIBRARY BOOKS (10 books)
 INSERT INTO library_books (title, author, isbn, category, publisher, total_copies, available_copies, shelf_location, school_id) VALUES
   ('The Great Gatsby', 'F. Scott Fitzgerald', '9780743273565', 'Fiction', 'Scribner', 5, 3, 'A-12', '00000000-0000-0000-0000-000000000001'),
   ('To Kill a Mockingbird', 'Harper Lee', '9780061120084', 'Fiction', 'HarperCollins', 4, 2, 'A-15', '00000000-0000-0000-0000-000000000001'),
@@ -928,7 +1119,7 @@ INSERT INTO library_books (title, author, isbn, category, publisher, total_copie
   ('Programming in Python', 'Mark Lutz', '9781449355739', 'Technology', 'O''Reilly', 4, 4, 'F-01', '00000000-0000-0000-0000-000000000001'),
   ('Organic Chemistry', 'Morrison Boyd', '9788131705099', 'Science', 'Pearson', 3, 2, 'B-15', '00000000-0000-0000-0000-000000000001');
 
--- TRANSPORT ROUTES
+-- 11.12 TRANSPORT ROUTES (5 routes)
 INSERT INTO transport_routes (name, stops, fare, school_id) VALUES
   ('Route 1 - North Delhi', 'Rohini,Pitampura,Model Town', 1500, '00000000-0000-0000-0000-000000000001'),
   ('Route 2 - South Delhi', 'Saket,Malviya Nagar,Pushp Vihar', 1800, '00000000-0000-0000-0000-000000000001'),
@@ -936,7 +1127,7 @@ INSERT INTO transport_routes (name, stops, fare, school_id) VALUES
   ('Route 4 - West Delhi', 'Janakpuri,Rajouri Garden,Punjabi Bagh', 1700, '00000000-0000-0000-0000-000000000001'),
   ('Route 5 - Noida', 'Sector 18,Sector 62,Atta Market', 2000, '00000000-0000-0000-0000-000000000001');
 
--- VEHICLES
+-- 11.13 VEHICLES (5 buses)
 INSERT INTO vehicles (bus_number, driver_name, driver_phone, capacity, route_id, school_id) VALUES
   ('DL01B1001', 'Driver Ramesh', '+91 9911111111', 40, (SELECT id FROM transport_routes WHERE name LIKE 'Route 1%' LIMIT 1), '00000000-0000-0000-0000-000000000001'),
   ('DL01B1002', 'Driver Suresh', '+91 9922222222', 40, (SELECT id FROM transport_routes WHERE name LIKE 'Route 2%' LIMIT 1), '00000000-0000-0000-0000-000000000001'),
@@ -944,7 +1135,7 @@ INSERT INTO vehicles (bus_number, driver_name, driver_phone, capacity, route_id,
   ('DL01B1004', 'Driver Ganesh', '+91 9944444444', 40, (SELECT id FROM transport_routes WHERE name LIKE 'Route 4%' LIMIT 1), '00000000-0000-0000-0000-000000000001'),
   ('DL01B1005', 'Driver Dinesh', '+91 9955555555', 45, (SELECT id FROM transport_routes WHERE name LIKE 'Route 5%' LIMIT 1), '00000000-0000-0000-0000-000000000001');
 
--- NOTICES
+-- 11.14 NOTICES (5 notices)
 INSERT INTO notices (title, content, target_audience, posted_by, date, school_id) VALUES
   ('Annual Day Celebration', 'The school''s Annual Day will be celebrated on 25th December. All students must participate.', 'all'::notice_audience, 'Rajesh Kumar', to_char(current_date, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
   ('Parent-Teacher Meeting', 'PTM scheduled for this Saturday from 9 AM to 12 PM.', 'all'::notice_audience, 'Rajesh Kumar', to_char(current_date, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
@@ -952,7 +1143,7 @@ INSERT INTO notices (title, content, target_audience, posted_by, date, school_id
   ('Diwali Holiday', 'School will remain closed for Diwali. Classes resume after break.', 'all'::notice_audience, 'Rajesh Kumar', to_char(current_date, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
   ('Science Exhibition', 'Annual Science Exhibition on 20th November. Submit project ideas by 10th.', 'all'::notice_audience, 'Suresh Patel', to_char(current_date, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001');
 
--- EVENTS
+-- 11.15 EVENTS (5 events)
 INSERT INTO school_events (title, description, date, end_date, type, school_id) VALUES
   ('Annual Day', 'Annual cultural function and prize distribution', '2024-12-25', NULL, 'function'::event_type, '00000000-0000-0000-0000-000000000001'),
   ('Diwali Break', 'Diwali holidays', '2024-11-10', '2024-11-15', 'holiday'::event_type, '00000000-0000-0000-0000-000000000001'),
@@ -960,26 +1151,37 @@ INSERT INTO school_events (title, description, date, end_date, type, school_id) 
   ('PTM', 'Parent-Teacher Meeting for Class 10', '2024-11-30', NULL, 'ptm'::event_type, '00000000-0000-0000-0000-000000000001'),
   ('Sports Day', 'Annual sports day with various athletic events', '2024-11-05', NULL, 'function'::event_type, '00000000-0000-0000-0000-000000000001');
 
--- EXAM
+-- 11.16 EXAM (Mid-Term for Class 10)
 INSERT INTO exams (name, type, school_id, class_id, start_date, end_date, max_marks)
 VALUES ('Mid-Term Examination 2024', 'mid_term'::exam_type, '00000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-00000000000d', '2024-09-15', '2024-09-25', 100);
 
--- EXAM RESULTS
+-- 11.17 EXAM RESULTS (for Class 10 students, 5 subjects each)
 DO $$
-DECLARE stu RECORD; subj RECORD; marks INT; grade_val TEXT;
+DECLARE
+  stu RECORD;
+  subj RECORD;
+  marks INT;
+  grade_val TEXT;
 BEGIN
   FOR stu IN SELECT id FROM students WHERE class_id = 'a0000000-0000-0000-0000-00000000000d' LOOP
-    FOR subj IN SELECT id FROM subjects WHERE school_id='00000000-0000-0000-0000-000000000001' ORDER BY code LIMIT 5 LOOP
+    FOR subj IN SELECT id FROM subjects WHERE school_id = '00000000-0000-0000-0000-000000000001' ORDER BY code LIMIT 5 LOOP
       marks := 55 + (random() * 45)::INT;
-      grade_val := CASE WHEN marks >= 90 THEN 'A+' WHEN marks >= 80 THEN 'A' WHEN marks >= 70 THEN 'B+' WHEN marks >= 60 THEN 'B' WHEN marks >= 50 THEN 'C' ELSE 'D' END;
+      grade_val := CASE
+        WHEN marks >= 90 THEN 'A+'
+        WHEN marks >= 80 THEN 'A'
+        WHEN marks >= 70 THEN 'B+'
+        WHEN marks >= 60 THEN 'B'
+        WHEN marks >= 50 THEN 'C'
+        ELSE 'D'
+      END;
       INSERT INTO exam_results (exam_id, student_id, subject_id, marks_obtained, max_marks, grade)
-      VALUES ((SELECT id FROM exams WHERE name='Mid-Term Examination 2024' LIMIT 1), stu.id, subj.id, marks, 100, grade_val)
+      VALUES ((SELECT id FROM exams WHERE name = 'Mid-Term Examination 2024' LIMIT 1), stu.id, subj.id, marks, 100, grade_val)
       ON CONFLICT (exam_id, student_id, subject_id) DO NOTHING;
     END LOOP;
   END LOOP;
 END $$;
 
--- HOMEWORK
+-- 11.18 HOMEWORK (5 assignments)
 INSERT INTO homework (class_id, section_id, subject_id, staff_id, title, description, due_date, school_id) VALUES
   ('a0000000-0000-0000-0000-00000000000d', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000d' AND name='A' LIMIT 1), 'b0000000-0000-0000-0000-000000000002', 'c0000000-0000-0000-0000-000000000003', 'Algebra - Quadratic Equations', 'Solve exercises 4.1 to 4.5 from textbook.', to_char(current_date + 7, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
   ('a0000000-0000-0000-0000-00000000000c', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000c' AND name='A' LIMIT 1), 'b0000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-000000000005', 'Essay - My Favorite Book', 'Write a 500-word essay on your favorite book.', to_char(current_date + 5, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
@@ -987,7 +1189,7 @@ INSERT INTO homework (class_id, section_id, subject_id, staff_id, title, descrip
   ('a0000000-0000-0000-0000-00000000000d', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000d' AND name='A' LIMIT 1), 'b0000000-0000-0000-0000-000000000004', 'c0000000-0000-0000-0000-000000000006', 'History - Independence Movement', 'Research 3 key events in India''s independence movement.', to_char(current_date + 7, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
   ('a0000000-0000-0000-0000-00000000000a', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000a' AND name='A' LIMIT 1), 'b0000000-0000-0000-0000-000000000005', 'c0000000-0000-0000-0000-000000000007', 'Hindi - Kabir ke Dohe', 'Memorize 5 dohe by Kabir and write their meaning.', to_char(current_date + 4, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001');
 
--- STAFF LEAVES
+-- 11.19 STAFF LEAVES (5 leave requests)
 INSERT INTO staff_leaves (staff_id, from_date, to_date, reason, type, status, approved_by) VALUES
   ('c0000000-0000-0000-0000-000000000003', '2024-11-01', '2024-11-03', 'Medical leave', 'sick'::leave_type, 'approved'::leave_status, 'Rajesh Kumar'),
   ('c0000000-0000-0000-0000-000000000004', '2024-11-10', '2024-11-12', 'Personal work', 'casual'::leave_type, 'approved'::leave_status, 'Rajesh Kumar'),
@@ -995,11 +1197,16 @@ INSERT INTO staff_leaves (staff_id, from_date, to_date, reason, type, status, ap
   ('c0000000-0000-0000-0000-000000000006', '2024-11-20', '2024-11-22', 'Not well', 'sick'::leave_type, 'pending'::leave_status, NULL),
   ('c0000000-0000-0000-0000-000000000007', '2024-11-25', '2024-11-26', 'Personal', 'casual'::leave_type, 'rejected'::leave_status, 'Rajesh Kumar');
 
--- PAYROLLS
+-- 11.20 PAYROLLS (current month for all staff)
 DO $$
-DECLARE stf RECORD; basic DECIMAL; allow DECIMAL; deduct DECIMAL; net DECIMAL;
+DECLARE
+  stf RECORD;
+  basic DECIMAL;
+  allow DECIMAL;
+  deduct DECIMAL;
+  net DECIMAL;
 BEGIN
-  FOR stf IN SELECT id, salary FROM staff WHERE school_id='00000000-0000-0000-0000-000000000001' LOOP
+  FOR stf IN SELECT id, salary FROM staff WHERE school_id = '00000000-0000-0000-0000-000000000001' LOOP
     basic := stf.salary;
     allow := basic * 0.20;
     deduct := basic * 0.12;
@@ -1011,14 +1218,24 @@ BEGIN
 END $$;
 
 -- ============================================================================
--- DONE!
+-- DONE! 🎉
 -- ============================================================================
--- ✅ 28 tables, 14 enums, 119 RLS policies, 5 triggers, 14 indexes, 5 storage buckets
+-- ✅ 28 tables created
+-- ✅ 14 enums (custom types)
+-- ✅ 119 RLS policies (role-based access control)
+-- ✅ 5 triggers (auto-update timestamps + auto-create profile on signup)
+-- ✅ 14 indexes (query performance)
+-- ✅ 5 storage buckets (student-photos, staff-photos, book-covers, homework-attachments, documents)
 -- ✅ Seed data: 1 school, 15 classes, 30 sections, 12 subjects, 12 staff, 10 students,
---    attendance, fees, books, routes, notices, events, exams, homework, leaves, payrolls
+--    7 days attendance, 15 fee structures + student fees, 10 library books, 5 transport routes,
+--    5 vehicles, 5 notices, 5 events, 1 exam + results, 5 homework, 5 staff leaves, 12 payrolls
 --
--- NEXT:
--- 1. Supabase Dashboard → Authentication → Users → Add User (superadmin@eduflow.com)
--- 2. SQL Editor run: UPDATE profiles SET role='super_admin', name='Super Admin' WHERE email='superadmin@eduflow.com';
--- 3. Login to app, go to User Management, add more users!
+-- NEXT STEPS:
+-- 1. Go to Supabase Dashboard → Authentication → Users → Add User
+--    Email: superadmin@eduflow.com (or any email you want)
+--    Password: (set a strong password)
+-- 2. Run this in SQL Editor to make the user a super admin:
+--    UPDATE profiles SET role = 'super_admin', name = 'Super Admin' WHERE email = 'superadmin@eduflow.com';
+-- 3. Login to the app with that email + password
+-- 4. Go to User Management module to add more users!
 -- ============================================================================
