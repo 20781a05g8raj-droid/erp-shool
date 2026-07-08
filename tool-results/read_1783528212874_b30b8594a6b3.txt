@@ -1,0 +1,1244 @@
+     1→-- ============================================================================
+     2→-- EduFlow ERP — Complete Supabase Schema
+     3→-- ============================================================================
+     4→-- INSTRUCTIONS:
+     5→-- 1. Supabase Dashboard → SQL Editor → New Query
+     6→-- 2. Paste this ENTIRE file
+     7→-- 3. Click Run
+     8→-- 4. Wait for "Success" message (takes 10-20 seconds)
+     9→-- ============================================================================
+    10→
+    11→-- ============================================================================
+    12→-- STEP 1: CLEANUP — Remove everything if it already exists
+    13→-- ============================================================================
+    14→-- This makes the script safe to re-run multiple times.
+    15→-- IF EXISTS = don't error if the object doesn't exist yet.
+    16→
+    17→DROP TABLE IF EXISTS certificates CASCADE;
+    18→DROP TABLE IF EXISTS school_events CASCADE;
+    19→DROP TABLE IF EXISTS notices CASCADE;
+    20→DROP TABLE IF EXISTS payrolls CASCADE;
+    21→DROP TABLE IF EXISTS staff_leaves CASCADE;
+    22→DROP TABLE IF EXISTS student_transport CASCADE;
+    23→DROP TABLE IF EXISTS vehicles CASCADE;
+    24→DROP TABLE IF EXISTS transport_routes CASCADE;
+    25→DROP TABLE IF EXISTS book_issues CASCADE;
+    26→DROP TABLE IF EXISTS library_books CASCADE;
+    27→DROP TABLE IF EXISTS fee_payments CASCADE;
+    28→DROP TABLE IF EXISTS student_fees CASCADE;
+    29→DROP TABLE IF EXISTS fee_items CASCADE;
+    30→DROP TABLE IF EXISTS fee_structures CASCADE;
+    31→DROP TABLE IF EXISTS homework CASCADE;
+    32→DROP TABLE IF EXISTS exam_results CASCADE;
+    33→DROP TABLE IF EXISTS exams CASCADE;
+    34→DROP TABLE IF EXISTS timetable_slots CASCADE;
+    35→DROP TABLE IF EXISTS staff_attendance CASCADE;
+    36→DROP TABLE IF EXISTS student_attendance CASCADE;
+    37→DROP TABLE IF EXISTS class_subjects CASCADE;
+    38→DROP TABLE IF EXISTS subjects CASCADE;
+    39→DROP TABLE IF EXISTS sections CASCADE;
+    40→DROP TABLE IF EXISTS students CASCADE;
+    41→DROP TABLE IF EXISTS staff CASCADE;
+    42→DROP TABLE IF EXISTS classes CASCADE;
+    43→DROP TABLE IF EXISTS profiles CASCADE;
+    44→DROP TABLE IF EXISTS schools CASCADE;
+    45→
+    46→DROP TYPE IF EXISTS user_role CASCADE;
+    47→DROP TYPE IF EXISTS student_status CASCADE;
+    48→DROP TYPE IF EXISTS staff_type CASCADE;
+    49→DROP TYPE IF EXISTS fee_status CASCADE;
+    50→DROP TYPE IF EXISTS payment_method CASCADE;
+    51→DROP TYPE IF EXISTS attendance_status CASCADE;
+    52→DROP TYPE IF EXISTS leave_status CASCADE;
+    53→DROP TYPE IF EXISTS leave_type CASCADE;
+    54→DROP TYPE IF EXISTS exam_type CASCADE;
+    55→DROP TYPE IF EXISTS book_issue_status CASCADE;
+    56→DROP TYPE IF EXISTS event_type CASCADE;
+    57→DROP TYPE IF EXISTS certificate_type CASCADE;
+    58→DROP TYPE IF EXISTS notice_audience CASCADE;
+    59→DROP TYPE IF EXISTS payroll_status CASCADE;
+    60→
+    61→DROP FUNCTION IF EXISTS update_updated_at() CASCADE;
+    62→DROP FUNCTION IF EXISTS handle_new_user() CASCADE;
+    63→DROP FUNCTION IF EXISTS get_current_school_id() CASCADE;
+    64→DROP FUNCTION IF EXISTS get_current_role() CASCADE;
+    65→DROP FUNCTION IF EXISTS is_admin() CASCADE;
+    66→DROP FUNCTION IF EXISTS get_current_student_id() CASCADE;
+    67→DROP FUNCTION IF EXISTS get_current_staff_id() CASCADE;
+    68→
+    69→-- Note: triggers on our tables are auto-dropped when we DROP TABLE CASCADE above.
+    70→-- Only auth.users trigger needs explicit drop:
+    71→DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+    72→
+    73→-- Note: Storage buckets CANNOT be deleted via SQL in Supabase.
+    74→-- We use INSERT ... ON CONFLICT DO NOTHING later to create them if they don't exist.
+    75→-- If you need to delete buckets, use Supabase Dashboard → Storage.
+    76→
+    77→-- ============================================================================
+    78→-- STEP 2: EXTENSIONS
+    79→-- ============================================================================
+    80→CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    81→CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+    82→
+    83→-- ============================================================================
+    84→-- STEP 3: ENUMS (custom types for type safety)
+    85→-- ============================================================================
+    86→CREATE TYPE user_role AS ENUM (
+    87→  'super_admin', 'school_admin', 'teacher', 'student', 'parent',
+    88→  'accountant', 'librarian', 'transport_manager', 'hr'
+    89→);
+    90→
+    91→CREATE TYPE student_status AS ENUM ('active', 'alumni', 'transferred', 'suspended');
+    92→CREATE TYPE staff_type AS ENUM ('teaching', 'non_teaching');
+    93→CREATE TYPE fee_status AS ENUM ('pending', 'partial', 'paid', 'overdue');
+    94→CREATE TYPE payment_method AS ENUM ('cash', 'online', 'cheque');
+    95→CREATE TYPE attendance_status AS ENUM ('present', 'absent', 'late', 'leave', 'halfday');
+    96→CREATE TYPE leave_status AS ENUM ('pending', 'approved', 'rejected');
+    97→CREATE TYPE leave_type AS ENUM ('casual', 'sick', 'earned', 'unpaid');
+    98→CREATE TYPE exam_type AS ENUM ('unit_test', 'mid_term', 'final');
+    99→CREATE TYPE book_issue_status AS ENUM ('issued', 'returned', 'overdue');
+   100→CREATE TYPE event_type AS ENUM ('holiday', 'ptm', 'exam', 'function', 'event');
+   101→CREATE TYPE certificate_type AS ENUM ('transfer', 'bonafide', 'character');
+   102→CREATE TYPE notice_audience AS ENUM ('all', 'class', 'role');
+   103→CREATE TYPE payroll_status AS ENUM ('pending', 'paid');
+   104→
+   105→-- ============================================================================
+   106→-- STEP 4: TABLES
+   107→-- ============================================================================
+   108→-- Order matters: parent tables first, then child tables with foreign keys.
+   109→
+   110→-- 4.1 SCHOOLS (top-level — no dependencies)
+   111→CREATE TABLE schools (
+   112→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   113→  name TEXT NOT NULL,
+   114→  address TEXT,
+   115→  phone TEXT,
+   116→  email TEXT,
+   117→  logo TEXT,
+   118→  established_date TEXT,
+   119→  created_at TIMESTAMPTZ DEFAULT now(),
+   120→  updated_at TIMESTAMPTZ DEFAULT now()
+   121→);
+   122→
+   123→-- 4.2 PROFILES (linked 1:1 to Supabase auth.users)
+   124→CREATE TABLE profiles (
+   125→  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+   126→  email TEXT UNIQUE NOT NULL,
+   127→  name TEXT NOT NULL,
+   128→  phone TEXT,
+   129→  avatar TEXT,
+   130→  role user_role NOT NULL DEFAULT 'school_admin',
+   131→  school_id UUID REFERENCES schools(id) ON DELETE SET NULL,
+   132→  status TEXT NOT NULL DEFAULT 'active',
+   133→  student_id UUID,  -- FK added later (circular dependency with students)
+   134→  staff_id UUID,    -- FK added later (circular dependency with staff)
+   135→  created_at TIMESTAMPTZ DEFAULT now(),
+   136→  updated_at TIMESTAMPTZ DEFAULT now()
+   137→);
+   138→
+   139→-- 4.3 CLASSES
+   140→CREATE TABLE classes (
+   141→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   142→  name TEXT NOT NULL,
+   143→  "order" INTEGER DEFAULT 0,
+   144→  school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+   145→  created_at TIMESTAMPTZ DEFAULT now()
+   146→);
+   147→
+   148→-- 4.4 SECTIONS (class_teacher_id FK added later, after staff table exists)
+   149→CREATE TABLE sections (
+   150→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   151→  name TEXT NOT NULL,
+   152→  class_id UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+   153→  class_teacher_id UUID,
+   154→  created_at TIMESTAMPTZ DEFAULT now()
+   155→);
+   156→
+   157→-- 4.5 SUBJECTS
+   158→CREATE TABLE subjects (
+   159→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   160→  name TEXT NOT NULL,
+   161→  code TEXT,
+   162→  school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+   163→  created_at TIMESTAMPTZ DEFAULT now()
+   164→);
+   165→
+   166→-- 4.6 CLASS_SUBJECTS (junction table)
+   167→CREATE TABLE class_subjects (
+   168→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   169→  class_id UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+   170→  subject_id UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+   171→  UNIQUE(class_id, subject_id)
+   172→);
+   173→
+   174→-- 4.7 STAFF
+   175→CREATE TABLE staff (
+   176→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   177→  employee_id TEXT UNIQUE NOT NULL,
+   178→  first_name TEXT NOT NULL,
+   179→  last_name TEXT NOT NULL,
+   180→  email TEXT,
+   181→  phone TEXT,
+   182→  dob TEXT,
+   183→  gender TEXT,
+   184→  designation TEXT,
+   185→  department TEXT,
+   186→  qualification TEXT,
+   187→  joining_date TEXT,
+   188→  type staff_type DEFAULT 'teaching',
+   189→  photo TEXT,
+   190→  salary DECIMAL(12,2) DEFAULT 0,
+   191→  school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+   192→  status TEXT DEFAULT 'active',
+   193→  created_at TIMESTAMPTZ DEFAULT now(),
+   194→  updated_at TIMESTAMPTZ DEFAULT now()
+   195→);
+   196→
+   197→-- Now add FK: sections.class_teacher_id → staff.id
+   198→ALTER TABLE sections
+   199→  ADD CONSTRAINT sections_class_teacher_fk
+   200→  FOREIGN KEY (class_teacher_id) REFERENCES staff(id) ON DELETE SET NULL;
+   201→
+   202→-- 4.8 STUDENTS
+   203→CREATE TABLE students (
+   204→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   205→  admission_number TEXT UNIQUE NOT NULL,
+   206→  roll_number TEXT,
+   207→  first_name TEXT NOT NULL,
+   208→  last_name TEXT NOT NULL,
+   209→  email TEXT,
+   210→  phone TEXT,
+   211→  dob TEXT,
+   212→  gender TEXT,
+   213→  blood_group TEXT,
+   214→  address TEXT,
+   215→  photo TEXT,
+   216→  class_id UUID REFERENCES classes(id) ON DELETE SET NULL,
+   217→  section_id UUID REFERENCES sections(id) ON DELETE SET NULL,
+   218→  status student_status DEFAULT 'active',
+   219→  school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+   220→  father_name TEXT,
+   221→  mother_name TEXT,
+   222→  parent_phone TEXT,
+   223→  parent_email TEXT,
+   224→  admission_date TEXT,
+   225→  created_at TIMESTAMPTZ DEFAULT now(),
+   226→  updated_at TIMESTAMPTZ DEFAULT now()
+   227→);
+   228→
+   229→-- Now add FKs: profiles.student_id → students.id, profiles.staff_id → staff.id
+   230→ALTER TABLE profiles
+   231→  ADD CONSTRAINT profiles_student_fk
+   232→  FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE SET NULL;
+   233→
+   234→ALTER TABLE profiles
+   235→  ADD CONSTRAINT profiles_staff_fk
+   236→  FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE SET NULL;
+   237→
+   238→-- 4.9 STUDENT_ATTENDANCE
+   239→CREATE TABLE student_attendance (
+   240→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   241→  student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+   242→  date TEXT NOT NULL,
+   243→  status attendance_status DEFAULT 'present',
+   244→  marked_by TEXT,
+   245→  created_at TIMESTAMPTZ DEFAULT now(),
+   246→  UNIQUE(student_id, date)
+   247→);
+   248→
+   249→-- 4.10 STAFF_ATTENDANCE
+   250→CREATE TABLE staff_attendance (
+   251→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   252→  staff_id UUID NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
+   253→  date TEXT NOT NULL,
+   254→  status TEXT DEFAULT 'present',
+   255→  check_in TEXT,
+   256→  check_out TEXT,
+   257→  created_at TIMESTAMPTZ DEFAULT now(),
+   258→  UNIQUE(staff_id, date)
+   259→);
+   260→
+   261→-- 4.11 TIMETABLE_SLOTS
+   262→CREATE TABLE timetable_slots (
+   263→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   264→  class_id UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+   265→  section_id UUID NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
+   266→  day TEXT NOT NULL,
+   267→  period INTEGER NOT NULL,
+   268→  subject_id UUID REFERENCES subjects(id) ON DELETE SET NULL,
+   269→  staff_id UUID REFERENCES staff(id) ON DELETE SET NULL,
+   270→  start_time TEXT NOT NULL,
+   271→  end_time TEXT NOT NULL,
+   272→  created_at TIMESTAMPTZ DEFAULT now()
+   273→);
+   274→
+   275→-- 4.12 EXAMS
+   276→CREATE TABLE exams (
+   277→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   278→  name TEXT NOT NULL,
+   279→  type exam_type,
+   280→  school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+   281→  class_id UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+   282→  start_date TEXT,
+   283→  end_date TEXT,
+   284→  max_marks INTEGER DEFAULT 100,
+   285→  created_at TIMESTAMPTZ DEFAULT now()
+   286→);
+   287→
+   288→-- 4.13 EXAM_RESULTS
+   289→CREATE TABLE exam_results (
+   290→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   291→  exam_id UUID NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+   292→  student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+   293→  subject_id UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+   294→  marks_obtained DECIMAL(6,2) DEFAULT 0,
+   295→  max_marks INTEGER DEFAULT 100,
+   296→  grade TEXT,
+   297→  remarks TEXT,
+   298→  created_at TIMESTAMPTZ DEFAULT now(),
+   299→  UNIQUE(exam_id, student_id, subject_id)
+   300→);
+   301→
+   302→-- 4.14 HOMEWORK
+   303→CREATE TABLE homework (
+   304→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   305→  class_id UUID NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+   306→  section_id UUID REFERENCES sections(id) ON DELETE SET NULL,
+   307→  subject_id UUID REFERENCES subjects(id) ON DELETE SET NULL,
+   308→  staff_id UUID REFERENCES staff(id) ON DELETE SET NULL,
+   309→  title TEXT NOT NULL,
+   310→  description TEXT,
+   311→  due_date TEXT,
+   312→  attachment TEXT,
+   313→  school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+   314→  created_at TIMESTAMPTZ DEFAULT now()
+   315→);
+   316→
+   317→-- 4.15 FEE_STRUCTURES
+   318→CREATE TABLE fee_structures (
+   319→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   320→  name TEXT NOT NULL,
+   321→  class_id UUID REFERENCES classes(id) ON DELETE SET NULL,
+   322→  school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+   323→  term TEXT,
+   324→  total_amount DECIMAL(12,2) DEFAULT 0,
+   325→  due_date TEXT,
+   326→  created_at TIMESTAMPTZ DEFAULT now()
+   327→);
+   328→
+   329→-- 4.16 FEE_ITEMS
+   330→CREATE TABLE fee_items (
+   331→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   332→  fee_structure_id UUID NOT NULL REFERENCES fee_structures(id) ON DELETE CASCADE,
+   333→  name TEXT NOT NULL,
+   334→  amount DECIMAL(12,2) DEFAULT 0
+   335→);
+   336→
+   337→-- 4.17 STUDENT_FEES
+   338→CREATE TABLE student_fees (
+   339→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   340→  student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+   341→  fee_structure_id UUID NOT NULL REFERENCES fee_structures(id) ON DELETE CASCADE,
+   342→  total_amount DECIMAL(12,2) DEFAULT 0,
+   343→  paid_amount DECIMAL(12,2) DEFAULT 0,
+   344→  due_amount DECIMAL(12,2) DEFAULT 0,
+   345→  due_date TEXT,
+   346→  status fee_status DEFAULT 'pending',
+   347→  created_at TIMESTAMPTZ DEFAULT now()
+   348→);
+   349→
+   350→-- 4.18 FEE_PAYMENTS
+   351→CREATE TABLE fee_payments (
+   352→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   353→  student_fee_id UUID NOT NULL REFERENCES student_fees(id) ON DELETE CASCADE,
+   354→  amount DECIMAL(12,2) NOT NULL,
+   355→  payment_method payment_method DEFAULT 'cash',
+   356→  payment_date TEXT,
+   357→  receipt_number TEXT,
+   358→  transaction_id TEXT,
+   359→  collected_by TEXT,
+   360→  remarks TEXT,
+   361→  created_at TIMESTAMPTZ DEFAULT now()
+   362→);
+   363→
+   364→-- 4.19 LIBRARY_BOOKS
+   365→CREATE TABLE library_books (
+   366→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   367→  title TEXT NOT NULL,
+   368→  author TEXT,
+   369→  isbn TEXT,
+   370→  category TEXT,
+   371→  publisher TEXT,
+   372→  total_copies INTEGER DEFAULT 1,
+   373→  available_copies INTEGER DEFAULT 1,
+   374→  cover_image TEXT,
+   375→  shelf_location TEXT,
+   376→  school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+   377→  created_at TIMESTAMPTZ DEFAULT now()
+   378→);
+   379→
+   380→-- 4.20 BOOK_ISSUES
+   381→CREATE TABLE book_issues (
+   382→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   383→  book_id UUID NOT NULL REFERENCES library_books(id) ON DELETE CASCADE,
+   384→  student_id UUID REFERENCES students(id) ON DELETE SET NULL,
+   385→  staff_id UUID REFERENCES staff(id) ON DELETE SET NULL,
+   386→  borrower_name TEXT,
+   387→  issue_date TEXT,
+   388→  due_date TEXT,
+   389→  return_date TEXT,
+   390→  fine DECIMAL(10,2) DEFAULT 0,
+   391→  status book_issue_status DEFAULT 'issued',
+   392→  created_at TIMESTAMPTZ DEFAULT now()
+   393→);
+   394→
+   395→-- 4.21 TRANSPORT_ROUTES
+   396→CREATE TABLE transport_routes (
+   397→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   398→  name TEXT NOT NULL,
+   399→  stops TEXT,
+   400→  fare DECIMAL(10,2) DEFAULT 0,
+   401→  school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+   402→  created_at TIMESTAMPTZ DEFAULT now()
+   403→);
+   404→
+   405→-- 4.22 VEHICLES
+   406→CREATE TABLE vehicles (
+   407→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   408→  bus_number TEXT NOT NULL,
+   409→  driver_name TEXT NOT NULL,
+   410→  driver_phone TEXT,
+   411→  capacity INTEGER DEFAULT 30,
+   412→  route_id UUID REFERENCES transport_routes(id) ON DELETE SET NULL,
+   413→  school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+   414→  created_at TIMESTAMPTZ DEFAULT now()
+   415→);
+   416→
+   417→-- 4.23 STUDENT_TRANSPORT
+   418→CREATE TABLE student_transport (
+   419→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   420→  student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+   421→  route_id UUID NOT NULL REFERENCES transport_routes(id) ON DELETE CASCADE,
+   422→  vehicle_id UUID REFERENCES vehicles(id) ON DELETE SET NULL,
+   423→  pickup_point TEXT,
+   424→  created_at TIMESTAMPTZ DEFAULT now()
+   425→);
+   426→
+   427→-- 4.24 STAFF_LEAVES
+   428→CREATE TABLE staff_leaves (
+   429→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   430→  staff_id UUID NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
+   431→  from_date TEXT NOT NULL,
+   432→  to_date TEXT NOT NULL,
+   433→  reason TEXT,
+   434→  type leave_type DEFAULT 'casual',
+   435→  status leave_status DEFAULT 'pending',
+   436→  approved_by TEXT,
+   437→  created_at TIMESTAMPTZ DEFAULT now()
+   438→);
+   439→
+   440→-- 4.25 PAYROLLS
+   441→CREATE TABLE payrolls (
+   442→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   443→  staff_id UUID NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
+   444→  month INTEGER NOT NULL,
+   445→  year INTEGER NOT NULL,
+   446→  basic_salary DECIMAL(12,2) DEFAULT 0,
+   447→  allowances DECIMAL(12,2) DEFAULT 0,
+   448→  deductions DECIMAL(12,2) DEFAULT 0,
+   449→  net_salary DECIMAL(12,2) DEFAULT 0,
+   450→  status payroll_status DEFAULT 'pending',
+   451→  paid_date TEXT,
+   452→  created_at TIMESTAMPTZ DEFAULT now(),
+   453→  UNIQUE(staff_id, month, year)
+   454→);
+   455→
+   456→-- 4.26 NOTICES
+   457→CREATE TABLE notices (
+   458→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   459→  title TEXT NOT NULL,
+   460→  content TEXT,
+   461→  target_audience notice_audience DEFAULT 'all',
+   462→  target_class_id UUID REFERENCES classes(id) ON DELETE SET NULL,
+   463→  target_role user_role,
+   464→  posted_by TEXT,
+   465→  date TEXT,
+   466→  school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+   467→  created_at TIMESTAMPTZ DEFAULT now()
+   468→);
+   469→
+   470→-- 4.27 SCHOOL_EVENTS
+   471→CREATE TABLE school_events (
+   472→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   473→  title TEXT NOT NULL,
+   474→  description TEXT,
+   475→  date TEXT NOT NULL,
+   476→  end_date TEXT,
+   477→  type event_type DEFAULT 'event',
+   478→  school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+   479→  created_at TIMESTAMPTZ DEFAULT now()
+   480→);
+   481→
+   482→-- 4.28 CERTIFICATES
+   483→CREATE TABLE certificates (
+   484→  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   485→  student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+   486→  type certificate_type NOT NULL,
+   487→  issue_date TEXT,
+   488→  issued_by TEXT,
+   489→  content TEXT,
+   490→  serial_number TEXT,
+   491→  school_id UUID NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+   492→  created_at TIMESTAMPTZ DEFAULT now()
+   493→);
+   494→
+   495→-- ============================================================================
+   496→-- STEP 5: INDEXES (for query performance)
+   497→-- ============================================================================
+   498→CREATE INDEX idx_profiles_school ON profiles(school_id);
+   499→CREATE INDEX idx_profiles_role ON profiles(role);
+   500→CREATE INDEX idx_students_school ON students(school_id);
+   501→CREATE INDEX idx_students_class ON students(class_id);
+   502→CREATE INDEX idx_staff_school ON staff(school_id);
+   503→CREATE INDEX idx_classes_school ON classes(school_id);
+   504→CREATE INDEX idx_subjects_school ON subjects(school_id);
+   505→CREATE INDEX idx_sa_student_date ON student_attendance(student_id, date);
+   506→CREATE INDEX idx_student_fees_student ON student_fees(student_id);
+   507→CREATE INDEX idx_exam_results_exam ON exam_results(exam_id);
+   508→CREATE INDEX idx_exam_results_student ON exam_results(student_id);
+   509→CREATE INDEX idx_homework_class ON homework(class_id);
+   510→CREATE INDEX idx_notices_school ON notices(school_id);
+   511→CREATE INDEX idx_timetable_class_section ON timetable_slots(class_id, section_id);
+   512→
+   513→-- ============================================================================
+   514→-- STEP 6: TRIGGERS
+   515→-- ============================================================================
+   516→
+   517→-- Function: auto-update updated_at timestamp
+   518→CREATE OR REPLACE FUNCTION update_updated_at()
+   519→RETURNS TRIGGER AS $$
+   520→BEGIN
+   521→  NEW.updated_at = now();
+   522→  RETURN NEW;
+   523→END;
+   524→$$ LANGUAGE plpgsql;
+   525→
+   526→CREATE TRIGGER trg_schools_updated BEFORE UPDATE ON schools
+   527→  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+   528→
+   529→CREATE TRIGGER trg_profiles_updated BEFORE UPDATE ON profiles
+   530→  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+   531→
+   532→CREATE TRIGGER trg_staff_updated BEFORE UPDATE ON staff
+   533→  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+   534→
+   535→CREATE TRIGGER trg_students_updated BEFORE UPDATE ON students
+   536→  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+   537→
+   538→-- Function: auto-create profile when a user signs up via Supabase Auth
+   539→CREATE OR REPLACE FUNCTION handle_new_user()
+   540→RETURNS TRIGGER AS $$
+   541→BEGIN
+   542→  INSERT INTO public.profiles (id, email, name)
+   543→  VALUES (
+   544→    NEW.id,
+   545→    NEW.email,
+   546→    COALESCE(NEW.raw_user_meta_data->>'name', split_part(NEW.email, '@', 1))
+   547→  );
+   548→  RETURN NEW;
+   549→END;
+   550→$$ LANGUAGE plpgsql SECURITY DEFINER;
+   551→
+   552→CREATE TRIGGER on_auth_user_created
+   553→  AFTER INSERT ON auth.users
+   554→  FOR EACH ROW EXECUTE FUNCTION handle_new_user();
+   555→
+   556→-- ============================================================================
+   557→-- STEP 7: ROW LEVEL SECURITY (RLS) — Enable on all tables
+   558→-- ============================================================================
+   559→ALTER TABLE schools ENABLE ROW LEVEL SECURITY;
+   560→ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+   561→ALTER TABLE classes ENABLE ROW LEVEL SECURITY;
+   562→ALTER TABLE sections ENABLE ROW LEVEL SECURITY;
+   563→ALTER TABLE subjects ENABLE ROW LEVEL SECURITY;
+   564→ALTER TABLE class_subjects ENABLE ROW LEVEL SECURITY;
+   565→ALTER TABLE staff ENABLE ROW LEVEL SECURITY;
+   566→ALTER TABLE students ENABLE ROW LEVEL SECURITY;
+   567→ALTER TABLE student_attendance ENABLE ROW LEVEL SECURITY;
+   568→ALTER TABLE staff_attendance ENABLE ROW LEVEL SECURITY;
+   569→ALTER TABLE timetable_slots ENABLE ROW LEVEL SECURITY;
+   570→ALTER TABLE exams ENABLE ROW LEVEL SECURITY;
+   571→ALTER TABLE exam_results ENABLE ROW LEVEL SECURITY;
+   572→ALTER TABLE homework ENABLE ROW LEVEL SECURITY;
+   573→ALTER TABLE fee_structures ENABLE ROW LEVEL SECURITY;
+   574→ALTER TABLE fee_items ENABLE ROW LEVEL SECURITY;
+   575→ALTER TABLE student_fees ENABLE ROW LEVEL SECURITY;
+   576→ALTER TABLE fee_payments ENABLE ROW LEVEL SECURITY;
+   577→ALTER TABLE library_books ENABLE ROW LEVEL SECURITY;
+   578→ALTER TABLE book_issues ENABLE ROW LEVEL SECURITY;
+   579→ALTER TABLE transport_routes ENABLE ROW LEVEL SECURITY;
+   580→ALTER TABLE vehicles ENABLE ROW LEVEL SECURITY;
+   581→ALTER TABLE student_transport ENABLE ROW LEVEL SECURITY;
+   582→ALTER TABLE staff_leaves ENABLE ROW LEVEL SECURITY;
+   583→ALTER TABLE payrolls ENABLE ROW LEVEL SECURITY;
+   584→ALTER TABLE notices ENABLE ROW LEVEL SECURITY;
+   585→ALTER TABLE school_events ENABLE ROW LEVEL SECURITY;
+   586→ALTER TABLE certificates ENABLE ROW LEVEL SECURITY;
+   587→
+   588→-- ============================================================================
+   589→-- STEP 8: HELPER FUNCTIONS (used in RLS policies)
+   590→-- ============================================================================
+   591→CREATE OR REPLACE FUNCTION get_current_school_id()
+   592→RETURNS UUID AS $$
+   593→  SELECT school_id FROM profiles WHERE id = auth.uid();
+   594→$$ LANGUAGE sql SECURITY DEFINER STABLE;
+   595→
+   596→CREATE OR REPLACE FUNCTION get_current_role()
+   597→RETURNS user_role AS $$
+   598→  SELECT role FROM profiles WHERE id = auth.uid();
+   599→$$ LANGUAGE sql SECURITY DEFINER STABLE;
+   600→
+   601→CREATE OR REPLACE FUNCTION is_admin()
+   602→RETURNS BOOLEAN AS $$
+   603→  SELECT role IN ('super_admin', 'school_admin') FROM profiles WHERE id = auth.uid();
+   604→$$ LANGUAGE sql SECURITY DEFINER STABLE;
+   605→
+   606→CREATE OR REPLACE FUNCTION get_current_student_id()
+   607→RETURNS UUID AS $$
+   608→  SELECT student_id FROM profiles WHERE id = auth.uid();
+   609→$$ LANGUAGE sql SECURITY DEFINER STABLE;
+   610→
+   611→CREATE OR REPLACE FUNCTION get_current_staff_id()
+   612→RETURNS UUID AS $$
+   613→  SELECT staff_id FROM profiles WHERE id = auth.uid();
+   614→$$ LANGUAGE sql SECURITY DEFINER STABLE;
+   615→
+   616→-- ============================================================================
+   617→-- STEP 9: RLS POLICIES (role-based access control)
+   618→-- ============================================================================
+   619→-- Each table gets SELECT/INSERT/UPDATE/DELETE policies based on user role.
+   620→
+   621→-- SCHOOLS
+   622→CREATE POLICY schools_select ON schools FOR SELECT
+   623→  USING (get_current_role() = 'super_admin' OR id = get_current_school_id());
+   624→CREATE POLICY schools_insert ON schools FOR INSERT
+   625→  WITH CHECK (get_current_role() = 'super_admin');
+   626→CREATE POLICY schools_update ON schools FOR UPDATE
+   627→  USING (get_current_role() = 'super_admin');
+   628→CREATE POLICY schools_delete ON schools FOR DELETE
+   629→  USING (get_current_role() = 'super_admin');
+   630→
+   631→-- PROFILES
+   632→CREATE POLICY profiles_select ON profiles FOR SELECT
+   633→  USING (id = auth.uid() OR (is_admin() AND school_id = get_current_school_id()));
+   634→CREATE POLICY profiles_insert ON profiles FOR INSERT
+   635→  WITH CHECK (is_admin());
+   636→CREATE POLICY profiles_update ON profiles FOR UPDATE
+   637→  USING (is_admin() OR id = auth.uid());
+   638→CREATE POLICY profiles_delete ON profiles FOR DELETE
+   639→  USING (is_admin());
+   640→
+   641→-- CLASSES
+   642→CREATE POLICY classes_select ON classes FOR SELECT
+   643→  USING (school_id = get_current_school_id());
+   644→CREATE POLICY classes_insert ON classes FOR INSERT
+   645→  WITH CHECK (is_admin() AND school_id = get_current_school_id());
+   646→CREATE POLICY classes_update ON classes FOR UPDATE
+   647→  USING (is_admin() AND school_id = get_current_school_id());
+   648→CREATE POLICY classes_delete ON classes FOR DELETE
+   649→  USING (is_admin() AND school_id = get_current_school_id());
+   650→
+   651→-- SECTIONS
+   652→CREATE POLICY sections_select ON sections FOR SELECT
+   653→  USING (class_id IN (SELECT id FROM classes WHERE school_id = get_current_school_id()));
+   654→CREATE POLICY sections_insert ON sections FOR INSERT
+   655→  WITH CHECK (is_admin());
+   656→CREATE POLICY sections_update ON sections FOR UPDATE
+   657→  USING (is_admin());
+   658→CREATE POLICY sections_delete ON sections FOR DELETE
+   659→  USING (is_admin());
+   660→
+   661→-- SUBJECTS
+   662→CREATE POLICY subjects_select ON subjects FOR SELECT
+   663→  USING (school_id = get_current_school_id());
+   664→CREATE POLICY subjects_insert ON subjects FOR INSERT
+   665→  WITH CHECK (is_admin() AND school_id = get_current_school_id());
+   666→CREATE POLICY subjects_update ON subjects FOR UPDATE
+   667→  USING (is_admin() AND school_id = get_current_school_id());
+   668→CREATE POLICY subjects_delete ON subjects FOR DELETE
+   669→  USING (is_admin() AND school_id = get_current_school_id());
+   670→
+   671→-- CLASS_SUBJECTS
+   672→CREATE POLICY cs_select ON class_subjects FOR SELECT
+   673→  USING (class_id IN (SELECT id FROM classes WHERE school_id = get_current_school_id()));
+   674→CREATE POLICY cs_insert ON class_subjects FOR INSERT
+   675→  WITH CHECK (is_admin());
+   676→CREATE POLICY cs_delete ON class_subjects FOR DELETE
+   677→  USING (is_admin());
+   678→
+   679→-- STAFF
+   680→CREATE POLICY staff_select ON staff FOR SELECT
+   681→  USING (school_id = get_current_school_id());
+   682→CREATE POLICY staff_insert ON staff FOR INSERT
+   683→  WITH CHECK (is_admin() AND school_id = get_current_school_id());
+   684→CREATE POLICY staff_update ON staff FOR UPDATE
+   685→  USING (is_admin() AND school_id = get_current_school_id());
+   686→CREATE POLICY staff_delete ON staff FOR DELETE
+   687→  USING (is_admin() AND school_id = get_current_school_id());
+   688→
+   689→-- STUDENTS
+   690→CREATE POLICY students_select ON students FOR SELECT
+   691→  USING (school_id = get_current_school_id() OR id = get_current_student_id());
+   692→CREATE POLICY students_insert ON students FOR INSERT
+   693→  WITH CHECK ((is_admin() OR get_current_role() = 'accountant') AND school_id = get_current_school_id());
+   694→CREATE POLICY students_update ON students FOR UPDATE
+   695→  USING ((is_admin() OR get_current_role() = 'accountant') AND school_id = get_current_school_id());
+   696→CREATE POLICY students_delete ON students FOR DELETE
+   697→  USING (is_admin() AND school_id = get_current_school_id());
+   698→
+   699→-- STUDENT_ATTENDANCE
+   700→CREATE POLICY sa_select ON student_attendance FOR SELECT
+   701→  USING (student_id IN (SELECT id FROM students WHERE school_id = get_current_school_id()) OR student_id = get_current_student_id());
+   702→CREATE POLICY sa_insert ON student_attendance FOR INSERT
+   703→  WITH CHECK (get_current_role() IN ('teacher', 'school_admin', 'super_admin', 'hr') AND student_id IN (SELECT id FROM students WHERE school_id = get_current_school_id()));
+   704→CREATE POLICY sa_update ON student_attendance FOR UPDATE
+   705→  USING (get_current_role() IN ('teacher', 'school_admin', 'super_admin', 'hr'));
+   706→
+   707→-- STAFF_ATTENDANCE
+   708→CREATE POLICY sta_select ON staff_attendance FOR SELECT
+   709→  USING (staff_id IN (SELECT id FROM staff WHERE school_id = get_current_school_id()));
+   710→CREATE POLICY sta_insert ON staff_attendance FOR INSERT
+   711→  WITH CHECK (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
+   712→CREATE POLICY sta_update ON staff_attendance FOR UPDATE
+   713→  USING (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
+   714→
+   715→-- TIMETABLE_SLOTS
+   716→CREATE POLICY ts_select ON timetable_slots FOR SELECT
+   717→  USING (class_id IN (SELECT id FROM classes WHERE school_id = get_current_school_id()));
+   718→CREATE POLICY ts_insert ON timetable_slots FOR INSERT
+   719→  WITH CHECK (get_current_role() IN ('school_admin', 'super_admin', 'hr') AND class_id IN (SELECT id FROM classes WHERE school_id = get_current_school_id()));
+   720→CREATE POLICY ts_update ON timetable_slots FOR UPDATE
+   721→  USING (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
+   722→CREATE POLICY ts_delete ON timetable_slots FOR DELETE
+   723→  USING (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
+   724→
+   725→-- EXAMS
+   726→CREATE POLICY exams_select ON exams FOR SELECT
+   727→  USING (school_id = get_current_school_id());
+   728→CREATE POLICY exams_insert ON exams FOR INSERT
+   729→  WITH CHECK (is_admin() AND school_id = get_current_school_id());
+   730→CREATE POLICY exams_update ON exams FOR UPDATE
+   731→  USING (is_admin() AND school_id = get_current_school_id());
+   732→CREATE POLICY exams_delete ON exams FOR DELETE
+   733→  USING (is_admin() AND school_id = get_current_school_id());
+   734→
+   735→-- EXAM_RESULTS
+   736→CREATE POLICY er_select ON exam_results FOR SELECT
+   737→  USING (exam_id IN (SELECT id FROM exams WHERE school_id = get_current_school_id()) OR student_id = get_current_student_id());
+   738→CREATE POLICY er_insert ON exam_results FOR INSERT
+   739→  WITH CHECK (get_current_role() IN ('teacher', 'school_admin', 'super_admin'));
+   740→CREATE POLICY er_update ON exam_results FOR UPDATE
+   741→  USING (get_current_role() IN ('teacher', 'school_admin', 'super_admin'));
+   742→CREATE POLICY er_delete ON exam_results FOR DELETE
+   743→  USING (is_admin());
+   744→
+   745→-- HOMEWORK
+   746→CREATE POLICY hw_select ON homework FOR SELECT
+   747→  USING (school_id = get_current_school_id());
+   748→CREATE POLICY hw_insert ON homework FOR INSERT
+   749→  WITH CHECK (get_current_role() IN ('teacher', 'school_admin', 'super_admin') AND school_id = get_current_school_id());
+   750→CREATE POLICY hw_update ON homework FOR UPDATE
+   751→  USING (get_current_role() IN ('teacher', 'school_admin', 'super_admin'));
+   752→CREATE POLICY hw_delete ON homework FOR DELETE
+   753→  USING (is_admin());
+   754→
+   755→-- FEE_STRUCTURES
+   756→CREATE POLICY fs_select ON fee_structures FOR SELECT
+   757→  USING (school_id = get_current_school_id());
+   758→CREATE POLICY fs_insert ON fee_structures FOR INSERT
+   759→  WITH CHECK ((is_admin() OR get_current_role() = 'accountant') AND school_id = get_current_school_id());
+   760→CREATE POLICY fs_update ON fee_structures FOR UPDATE
+   761→  USING (is_admin() OR get_current_role() = 'accountant');
+   762→CREATE POLICY fs_delete ON fee_structures FOR DELETE
+   763→  USING (is_admin());
+   764→
+   765→-- FEE_ITEMS
+   766→CREATE POLICY fi_select ON fee_items FOR SELECT
+   767→  USING (fee_structure_id IN (SELECT id FROM fee_structures WHERE school_id = get_current_school_id()));
+   768→CREATE POLICY fi_insert ON fee_items FOR INSERT
+   769→  WITH CHECK (is_admin() OR get_current_role() = 'accountant');
+   770→CREATE POLICY fi_update ON fee_items FOR UPDATE
+   771→  USING (is_admin() OR get_current_role() = 'accountant');
+   772→CREATE POLICY fi_delete ON fee_items FOR DELETE
+   773→  USING (is_admin());
+   774→
+   775→-- STUDENT_FEES
+   776→CREATE POLICY sf_select ON student_fees FOR SELECT
+   777→  USING (student_id IN (SELECT id FROM students WHERE school_id = get_current_school_id()) OR student_id = get_current_student_id());
+   778→CREATE POLICY sf_insert ON student_fees FOR INSERT
+   779→  WITH CHECK (is_admin() OR get_current_role() = 'accountant');
+   780→CREATE POLICY sf_update ON student_fees FOR UPDATE
+   781→  USING (is_admin() OR get_current_role() = 'accountant');
+   782→CREATE POLICY sf_delete ON student_fees FOR DELETE
+   783→  USING (is_admin());
+   784→
+   785→-- FEE_PAYMENTS
+   786→CREATE POLICY fp_select ON fee_payments FOR SELECT
+   787→  USING (student_fee_id IN (SELECT sf.id FROM student_fees sf JOIN students s ON sf.student_id = s.id WHERE s.school_id = get_current_school_id()));
+   788→CREATE POLICY fp_insert ON fee_payments FOR INSERT
+   789→  WITH CHECK (is_admin() OR get_current_role() = 'accountant');
+   790→CREATE POLICY fp_update ON fee_payments FOR UPDATE
+   791→  USING (is_admin() OR get_current_role() = 'accountant');
+   792→CREATE POLICY fp_delete ON fee_payments FOR DELETE
+   793→  USING (is_admin());
+   794→
+   795→-- LIBRARY_BOOKS
+   796→CREATE POLICY lb_select ON library_books FOR SELECT
+   797→  USING (school_id = get_current_school_id());
+   798→CREATE POLICY lb_insert ON library_books FOR INSERT
+   799→  WITH CHECK ((is_admin() OR get_current_role() = 'librarian') AND school_id = get_current_school_id());
+   800→CREATE POLICY lb_update ON library_books FOR UPDATE
+   801→  USING (is_admin() OR get_current_role() = 'librarian');
+   802→CREATE POLICY lb_delete ON library_books FOR DELETE
+   803→  USING (is_admin());
+   804→
+   805→-- BOOK_ISSUES
+   806→CREATE POLICY bi_select ON book_issues FOR SELECT
+   807→  USING (book_id IN (SELECT id FROM library_books WHERE school_id = get_current_school_id()));
+   808→CREATE POLICY bi_insert ON book_issues FOR INSERT
+   809→  WITH CHECK (is_admin() OR get_current_role() = 'librarian');
+   810→CREATE POLICY bi_update ON book_issues FOR UPDATE
+   811→  USING (is_admin() OR get_current_role() = 'librarian');
+   812→CREATE POLICY bi_delete ON book_issues FOR DELETE
+   813→  USING (is_admin());
+   814→
+   815→-- TRANSPORT_ROUTES
+   816→CREATE POLICY tr_select ON transport_routes FOR SELECT
+   817→  USING (school_id = get_current_school_id());
+   818→CREATE POLICY tr_insert ON transport_routes FOR INSERT
+   819→  WITH CHECK ((is_admin() OR get_current_role() = 'transport_manager') AND school_id = get_current_school_id());
+   820→CREATE POLICY tr_update ON transport_routes FOR UPDATE
+   821→  USING (is_admin() OR get_current_role() = 'transport_manager');
+   822→CREATE POLICY tr_delete ON transport_routes FOR DELETE
+   823→  USING (is_admin());
+   824→
+   825→-- VEHICLES
+   826→CREATE POLICY veh_select ON vehicles FOR SELECT
+   827→  USING (school_id = get_current_school_id());
+   828→CREATE POLICY veh_insert ON vehicles FOR INSERT
+   829→  WITH CHECK ((is_admin() OR get_current_role() = 'transport_manager') AND school_id = get_current_school_id());
+   830→CREATE POLICY veh_update ON vehicles FOR UPDATE
+   831→  USING (is_admin() OR get_current_role() = 'transport_manager');
+   832→CREATE POLICY veh_delete ON vehicles FOR DELETE
+   833→  USING (is_admin());
+   834→
+   835→-- STUDENT_TRANSPORT
+   836→CREATE POLICY st_select ON student_transport FOR SELECT
+   837→  USING (student_id IN (SELECT id FROM students WHERE school_id = get_current_school_id()) OR student_id = get_current_student_id());
+   838→CREATE POLICY st_insert ON student_transport FOR INSERT
+   839→  WITH CHECK (is_admin() OR get_current_role() = 'transport_manager');
+   840→CREATE POLICY st_update ON student_transport FOR UPDATE
+   841→  USING (is_admin() OR get_current_role() = 'transport_manager');
+   842→CREATE POLICY st_delete ON student_transport FOR DELETE
+   843→  USING (is_admin());
+   844→
+   845→-- STAFF_LEAVES
+   846→CREATE POLICY sl_select ON staff_leaves FOR SELECT
+   847→  USING (staff_id IN (SELECT id FROM staff WHERE school_id = get_current_school_id()) OR staff_id = get_current_staff_id());
+   848→CREATE POLICY sl_insert ON staff_leaves FOR INSERT
+   849→  WITH CHECK (get_current_role() IN ('school_admin', 'super_admin', 'teacher', 'hr'));
+   850→CREATE POLICY sl_update ON staff_leaves FOR UPDATE
+   851→  USING (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
+   852→CREATE POLICY sl_delete ON staff_leaves FOR DELETE
+   853→  USING (is_admin());
+   854→
+   855→-- PAYROLLS
+   856→CREATE POLICY pay_select ON payrolls FOR SELECT
+   857→  USING (staff_id IN (SELECT id FROM staff WHERE school_id = get_current_school_id()) OR staff_id = get_current_staff_id());
+   858→CREATE POLICY pay_insert ON payrolls FOR INSERT
+   859→  WITH CHECK (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
+   860→CREATE POLICY pay_update ON payrolls FOR UPDATE
+   861→  USING (get_current_role() IN ('school_admin', 'super_admin', 'hr'));
+   862→CREATE POLICY pay_delete ON payrolls FOR DELETE
+   863→  USING (is_admin());
+   864→
+   865→-- NOTICES
+   866→CREATE POLICY notices_select ON notices FOR SELECT
+   867→  USING (
+   868→    school_id = get_current_school_id()
+   869→    AND (
+   870→      target_audience = 'all'
+   871→      OR (target_audience = 'class' AND target_class_id IN (SELECT class_id FROM students WHERE id = get_current_student_id()))
+   872→      OR (target_audience = 'role' AND target_role = get_current_role())
+   873→      OR is_admin()
+   874→    )
+   875→  );
+   876→CREATE POLICY notices_insert ON notices FOR INSERT
+   877→  WITH CHECK (get_current_role() IN ('school_admin', 'super_admin', 'teacher') AND school_id = get_current_school_id());
+   878→CREATE POLICY notices_update ON notices FOR UPDATE
+   879→  USING (get_current_role() IN ('school_admin', 'super_admin', 'teacher'));
+   880→CREATE POLICY notices_delete ON notices FOR DELETE
+   881→  USING (is_admin());
+   882→
+   883→-- SCHOOL_EVENTS
+   884→CREATE POLICY events_select ON school_events FOR SELECT
+   885→  USING (school_id = get_current_school_id());
+   886→CREATE POLICY events_insert ON school_events FOR INSERT
+   887→  WITH CHECK (is_admin() AND school_id = get_current_school_id());
+   888→CREATE POLICY events_update ON school_events FOR UPDATE
+   889→  USING (is_admin());
+   890→CREATE POLICY events_delete ON school_events FOR DELETE
+   891→  USING (is_admin());
+   892→
+   893→-- CERTIFICATES
+   894→CREATE POLICY cert_select ON certificates FOR SELECT
+   895→  USING (school_id = get_current_school_id() OR student_id = get_current_student_id());
+   896→CREATE POLICY cert_insert ON certificates FOR INSERT
+   897→  WITH CHECK (is_admin() AND school_id = get_current_school_id());
+   898→CREATE POLICY cert_delete ON certificates FOR DELETE
+   899→  USING (is_admin());
+   900→
+   901→-- ============================================================================
+   902→-- STEP 10: STORAGE BUCKETS (for file uploads)
+   903→-- ============================================================================
+   904→INSERT INTO storage.buckets (id, name, public) VALUES
+   905→  ('student-photos', 'student-photos', true),
+   906→  ('staff-photos', 'staff-photos', true),
+   907→  ('book-covers', 'book-covers', true),
+   908→  ('homework-attachments', 'homework-attachments', true),
+   909→  ('documents', 'documents', false)
+   910→ON CONFLICT (id) DO NOTHING;
+   911→
+   912→-- Storage policies
+   913→CREATE POLICY "Public read student-photos" ON storage.objects FOR SELECT
+   914→  USING (bucket_id = 'student-photos');
+   915→CREATE POLICY "Admin write student-photos" ON storage.objects FOR INSERT
+   916→  WITH CHECK (bucket_id = 'student-photos' AND is_admin());
+   917→
+   918→CREATE POLICY "Public read staff-photos" ON storage.objects FOR SELECT
+   919→  USING (bucket_id = 'staff-photos');
+   920→CREATE POLICY "Admin write staff-photos" ON storage.objects FOR INSERT
+   921→  WITH CHECK (bucket_id = 'staff-photos' AND is_admin());
+   922→
+   923→CREATE POLICY "Public read book-covers" ON storage.objects FOR SELECT
+   924→  USING (bucket_id = 'book-covers');
+   925→CREATE POLICY "Admin write book-covers" ON storage.objects FOR INSERT
+   926→  WITH CHECK (bucket_id = 'book-covers' AND is_admin());
+   927→
+   928→CREATE POLICY "Auth read homework-attachments" ON storage.objects FOR SELECT
+   929→  USING (bucket_id = 'homework-attachments' AND auth.uid() IS NOT NULL);
+   930→CREATE POLICY "Teacher write homework-attachments" ON storage.objects FOR INSERT
+   931→  WITH CHECK (bucket_id = 'homework-attachments' AND get_current_role() IN ('teacher', 'school_admin', 'super_admin'));
+   932→
+   933→CREATE POLICY "Auth read documents" ON storage.objects FOR SELECT
+   934→  USING (bucket_id = 'documents' AND auth.uid() IS NOT NULL);
+   935→CREATE POLICY "Admin write documents" ON storage.objects FOR INSERT
+   936→  WITH CHECK (bucket_id = 'documents' AND is_admin());
+   937→
+   938→-- ============================================================================
+   939→-- STEP 11: SEED DATA
+   940→-- ============================================================================
+   941→
+   942→-- 11.1 SCHOOL
+   943→INSERT INTO schools (id, name, address, phone, email, established_date) VALUES
+   944→  ('00000000-0000-0000-0000-000000000001', 'Greenwood International School', '123 Education Lane, Knowledge Park, New Delhi - 110001', '+91 98765 43210', 'info@greenwood.edu', '1998-06-15');
+   945→
+   946→-- 11.2 CLASSES (15 classes)
+   947→INSERT INTO classes (id, name, "order", school_id) VALUES
+   948→  ('a0000000-0000-0000-0000-000000000001', 'Nursery', 1, '00000000-0000-0000-0000-000000000001'),
+   949→  ('a0000000-0000-0000-0000-000000000002', 'LKG', 2, '00000000-0000-0000-0000-000000000001'),
+   950→  ('a0000000-0000-0000-0000-000000000003', 'UKG', 3, '00000000-0000-0000-0000-000000000001'),
+   951→  ('a0000000-0000-0000-0000-000000000004', 'Class 1', 4, '00000000-0000-0000-0000-000000000001'),
+   952→  ('a0000000-0000-0000-0000-000000000005', 'Class 2', 5, '00000000-0000-0000-0000-000000000001'),
+   953→  ('a0000000-0000-0000-0000-000000000006', 'Class 3', 6, '00000000-0000-0000-0000-000000000001'),
+   954→  ('a0000000-0000-0000-0000-000000000007', 'Class 4', 7, '00000000-0000-0000-0000-000000000001'),
+   955→  ('a0000000-0000-0000-0000-000000000008', 'Class 5', 8, '00000000-0000-0000-0000-000000000001'),
+   956→  ('a0000000-0000-0000-0000-000000000009', 'Class 6', 9, '00000000-0000-0000-0000-000000000001'),
+   957→  ('a0000000-0000-0000-0000-00000000000a', 'Class 7', 10, '00000000-0000-0000-0000-000000000001'),
+   958→  ('a0000000-0000-0000-0000-00000000000b', 'Class 8', 11, '00000000-0000-0000-0000-000000000001'),
+   959→  ('a0000000-0000-0000-0000-00000000000c', 'Class 9', 12, '00000000-0000-0000-0000-000000000001'),
+   960→  ('a0000000-0000-0000-0000-00000000000d', 'Class 10', 13, '00000000-0000-0000-0000-000000000001'),
+   961→  ('a0000000-0000-0000-0000-00000000000e', 'Class 11', 14, '00000000-0000-0000-0000-000000000001'),
+   962→  ('a0000000-0000-0000-0000-00000000000f', 'Class 12', 15, '00000000-0000-0000-0000-000000000001');
+   963→
+   964→-- 11.3 SECTIONS (A, B for each class) — using DO block
+   965→DO $$
+   966→DECLARE
+   967→  cls RECORD;
+   968→  sec_char CHAR(1);
+   969→  sec_order INT;
+   970→BEGIN
+   971→  FOR cls IN SELECT id FROM classes WHERE school_id = '00000000-0000-0000-0000-000000000001' LOOP
+   972→    FOR sec_order IN 1..2 LOOP
+   973→      sec_char := CHR(64 + sec_order);  -- 'A' or 'B'
+   974→      INSERT INTO sections (class_id, name) VALUES (cls.id, sec_char);
+   975→    END LOOP;
+   976→  END LOOP;
+   977→END $$;
+   978→
+   979→-- 11.4 SUBJECTS (12 subjects)
+   980→INSERT INTO subjects (id, name, code, school_id) VALUES
+   981→  ('b0000000-0000-0000-0000-000000000001', 'English', 'ENG', '00000000-0000-0000-0000-000000000001'),
+   982→  ('b0000000-0000-0000-0000-000000000002', 'Mathematics', 'MATH', '00000000-0000-0000-0000-000000000001'),
+   983→  ('b0000000-0000-0000-0000-000000000003', 'Science', 'SCI', '00000000-0000-0000-0000-000000000001'),
+   984→  ('b0000000-0000-0000-0000-000000000004', 'Social Studies', 'SST', '00000000-0000-0000-0000-000000000001'),
+   985→  ('b0000000-0000-0000-0000-000000000005', 'Hindi', 'HIN', '00000000-0000-0000-0000-000000000001'),
+   986→  ('b0000000-0000-0000-0000-000000000006', 'Computer Science', 'CS', '00000000-0000-0000-0000-000000000001'),
+   987→  ('b0000000-0000-0000-0000-000000000007', 'Physics', 'PHY', '00000000-0000-0000-0000-000000000001'),
+   988→  ('b0000000-0000-0000-0000-000000000008', 'Chemistry', 'CHEM', '00000000-0000-0000-0000-000000000001'),
+   989→  ('b0000000-0000-0000-0000-000000000009', 'Biology', 'BIO', '00000000-0000-0000-0000-000000000001'),
+   990→  ('b0000000-0000-0000-0000-00000000000a', 'Physical Education', 'PE', '00000000-0000-0000-0000-000000000001'),
+   991→  ('b0000000-0000-0000-0000-00000000000b', 'Art', 'ART', '00000000-0000-0000-0000-000000000001'),
+   992→  ('b0000000-0000-0000-0000-00000000000c', 'Music', 'MUS', '00000000-0000-0000-0000-000000000001');
+   993→
+   994→-- 11.5 CLASS_SUBJECTS (assign first 6 subjects to each class)
+   995→DO $$
+   996→DECLARE
+   997→  cls RECORD;
+   998→  subj RECORD;
+   999→BEGIN
+  1000→  FOR cls IN SELECT id FROM classes WHERE school_id = '00000000-0000-0000-0000-000000000001' LOOP
+  1001→    FOR subj IN SELECT id FROM subjects WHERE school_id = '00000000-0000-0000-0000-000000000001' ORDER BY code LIMIT 6 LOOP
+  1002→      INSERT INTO class_subjects (class_id, subject_id) VALUES (cls.id, subj.id) ON CONFLICT DO NOTHING;
+  1003→    END LOOP;
+  1004→  END LOOP;
+  1005→END $$;
+  1006→
+  1007→-- 11.6 STAFF (12 staff members)
+  1008→INSERT INTO staff (id, employee_id, first_name, last_name, email, phone, designation, department, type, salary, school_id, status, qualification, joining_date) VALUES
+  1009→  ('c0000000-0000-0000-0000-000000000001', 'EMP0001', 'Rajesh', 'Kumar', 'rajesh.kumar@greenwood.edu', '+91 9800000011', 'Principal', 'Administration', 'non_teaching', 120000, '00000000-0000-0000-0000-000000000001', 'active', 'M.Ed, B.Ed', '2010-06-15'),
+  1010→  ('c0000000-0000-0000-0000-000000000002', 'EMP0002', 'Priya', 'Sharma', 'priya.sharma@greenwood.edu', '+91 9800000022', 'Vice Principal', 'Administration', 'non_teaching', 90000, '00000000-0000-0000-0000-000000000001', 'active', 'M.Ed', '2011-07-01'),
+  1011→  ('c0000000-0000-0000-0000-000000000003', 'EMP0003', 'Anita', 'Verma', 'anita.verma@greenwood.edu', '+91 9800000033', 'Senior Teacher', 'Mathematics', 'teaching', 55000, '00000000-0000-0000-0000-000000000001', 'active', 'M.Sc, B.Ed', '2012-03-15'),
+  1012→  ('c0000000-0000-0000-0000-000000000004', 'EMP0004', 'Suresh', 'Patel', 'suresh.patel@greenwood.edu', '+91 9800000044', 'Teacher', 'Science', 'teaching', 48000, '00000000-0000-0000-0000-000000000001', 'active', 'M.Sc, B.Ed', '2013-06-20'),
+  1013→  ('c0000000-0000-0000-0000-000000000005', 'EMP0005', 'Meena', 'Reddy', 'meena.reddy@greenwood.edu', '+91 9800000055', 'Teacher', 'English', 'teaching', 50000, '00000000-0000-0000-0000-000000000001', 'active', 'M.A, B.Ed', '2014-07-10'),
+  1014→  ('c0000000-0000-0000-0000-000000000006', 'EMP0006', 'Vikram', 'Singh', 'vikram.singh@greenwood.edu', '+91 9800000066', 'Teacher', 'Social Studies', 'teaching', 47000, '00000000-0000-0000-0000-000000000001', 'active', 'M.A, B.Ed', '2015-06-01'),
+  1015→  ('c0000000-0000-0000-0000-000000000007', 'EMP0007', 'Kavita', 'Nair', 'kavita.nair@greenwood.edu', '+91 9800000077', 'Teacher', 'Hindi', 'teaching', 45000, '00000000-0000-0000-0000-000000000001', 'active', 'M.A, B.Ed', '2016-07-15'),
+  1016→  ('c0000000-0000-0000-0000-000000000008', 'EMP0008', 'Arun', 'Gupta', 'arun.gupta@greenwood.edu', '+91 9800000088', 'Teacher', 'Computer Science', 'teaching', 52000, '00000000-0000-0000-0000-000000000001', 'active', 'MCA, B.Ed', '2017-06-10'),
+  1017→  ('c0000000-0000-0000-0000-000000000009', 'EMP0009', 'Deepak', 'Mehta', 'deepak.mehta@greenwood.edu', '+91 9800000099', 'Accountant', 'Finance', 'non_teaching', 40000, '00000000-0000-0000-0000-000000000001', 'active', 'B.Com', '2018-04-01'),
+  1018→  ('c0000000-0000-0000-0000-00000000000a', 'EMP0010', 'Lakshmi', 'Iyer', 'lakshmi.iyer@greenwood.edu', '+91 9800000100', 'Librarian', 'Library', 'non_teaching', 38000, '00000000-0000-0000-0000-000000000001', 'active', 'MLIS', '2019-06-15'),
+  1019→  ('c0000000-0000-0000-0000-00000000000b', 'EMP0011', 'Ramesh', 'Yadav', 'ramesh.yadav@greenwood.edu', '+91 9800000111', 'Transport Manager', 'Transport', 'non_teaching', 42000, '00000000-0000-0000-0000-000000000001', 'active', 'BBA', '2020-03-01'),
+  1020→  ('c0000000-0000-0000-0000-00000000000c', 'EMP0012', 'Sunita', 'Joshi', 'sunita.joshi@greenwood.edu', '+91 9800000122', 'HR Manager', 'Human Resources', 'non_teaching', 46000, '00000000-0000-0000-0000-000000000001', 'active', 'MBA HR', '2021-06-01');
+  1021→
+  1022→-- 11.7 STUDENTS (10 students)
+  1023→INSERT INTO students (id, admission_number, roll_number, first_name, last_name, email, phone, dob, gender, blood_group, address, class_id, section_id, status, school_id, father_name, mother_name, parent_phone, parent_email, admission_date) VALUES
+  1024→  ('d0000000-0000-0000-0000-000000000001', 'GRW1001', '1', 'Aarav', 'Sharma', 'aarav.sharma@student.greenwood.edu', '+91 9900000001', '2015-05-10', 'male', 'A+', '101, Sector 5, New Delhi', 'a0000000-0000-0000-0000-000000000004', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000004' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Sharma', 'Mrs. Sharma', '+91 9900000011', 'parent.aarav@gmail.com', '2021-06-15'),
+  1025→  ('d0000000-0000-0000-0000-000000000002', 'GRW1002', '2', 'Diya', 'Das', 'diya.das@student.greenwood.edu', '+91 9900000002', '2015-08-22', 'female', 'B+', '202, Sector 8, New Delhi', 'a0000000-0000-0000-0000-000000000004', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000004' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Das', 'Mrs. Das', '+91 9900000022', 'parent.diya@gmail.com', '2021-06-15'),
+  1026→  ('d0000000-0000-0000-0000-000000000003', 'GRW1003', '3', 'Vivaan', 'Kumar', 'vivaan.kumar@student.greenwood.edu', '+91 9900000003', '2015-03-15', 'male', 'O+', '303, Sector 12, New Delhi', 'a0000000-0000-0000-0000-000000000004', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000004' AND name='B' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Kumar', 'Mrs. Kumar', '+91 9900000033', 'parent.vivaan@gmail.com', '2021-07-01'),
+  1027→  ('d0000000-0000-0000-0000-000000000004', 'GRW1004', '4', 'Ananya', 'Gupta', 'ananya.gupta@student.greenwood.edu', '+91 9900000004', '2015-11-30', 'female', 'AB+', '404, Sector 3, New Delhi', 'a0000000-0000-0000-0000-000000000005', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000005' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Gupta', 'Mrs. Gupta', '+91 9900000044', 'parent.ananya@gmail.com', '2021-07-01'),
+  1028→  ('d0000000-0000-0000-0000-000000000005', 'GRW1005', '5', 'Aditya', 'Singh', 'aditya.singh@student.greenwood.edu', '+91 9900000005', '2014-09-18', 'male', 'A-', '505, Sector 7, New Delhi', 'a0000000-0000-0000-0000-000000000006', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000006' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Singh', 'Mrs. Singh', '+91 9900000055', 'parent.aditya@gmail.com', '2021-07-15'),
+  1029→  ('d0000000-0000-0000-0000-000000000006', 'GRW1006', '6', 'Saanvi', 'Patel', 'saanvi.patel@student.greenwood.edu', '+91 9900000006', '2014-02-25', 'female', 'B-', '606, Sector 9, New Delhi', 'a0000000-0000-0000-0000-000000000007', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000007' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Patel', 'Mrs. Patel', '+91 9900000066', 'parent.saanvi@gmail.com', '2021-07-15'),
+  1030→  ('d0000000-0000-0000-0000-000000000007', 'GRW1007', '7', 'Arjun', 'Reddy', 'arjun.reddy@student.greenwood.edu', '+91 9900000007', '2013-07-12', 'male', 'O-', '707, Sector 11, New Delhi', 'a0000000-0000-0000-0000-000000000008', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000008' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Reddy', 'Mrs. Reddy', '+91 9900000077', 'parent.arjun@gmail.com', '2021-08-01'),
+  1031→  ('d0000000-0000-0000-0000-000000000008', 'GRW1008', '8', 'Myra', 'Nair', 'myra.nair@student.greenwood.edu', '+91 9900000008', '2013-12-05', 'female', 'A+', '808, Sector 15, New Delhi', 'a0000000-0000-0000-0000-000000000009', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-000000000009' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Nair', 'Mrs. Nair', '+91 9900000088', 'parent.myra@gmail.com', '2021-08-01'),
+  1032→  ('d0000000-0000-0000-0000-000000000009', 'GRW1009', '9', 'Krishna', 'Joshi', 'krishna.joshi@student.greenwood.edu', '+91 9900000009', '2012-04-20', 'male', 'B+', '909, Sector 18, New Delhi', 'a0000000-0000-0000-0000-00000000000c', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000c' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Joshi', 'Mrs. Joshi', '+91 9900000099', 'parent.krishna@gmail.com', '2021-08-15'),
+  1033→  ('d0000000-0000-0000-0000-00000000000a', 'GRW1010', '10', 'Ira', 'Mehta', 'ira.mehta@student.greenwood.edu', '+91 9900000010', '2012-10-08', 'female', 'AB+', '110, Sector 22, New Delhi', 'a0000000-0000-0000-0000-00000000000d', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000d' AND name='A' LIMIT 1), 'active', '00000000-0000-0000-0000-000000000001', 'Mr. Mehta', 'Mrs. Mehta', '+91 9900000100', 'parent.ira@gmail.com', '2021-08-15');
+  1034→
+  1035→-- 11.8 ATTENDANCE (last 7 days for all students)
+  1036→DO $$
+  1037→DECLARE
+  1038→  d_offset INT;
+  1039→  d_date TEXT;
+  1040→  stu RECORD;
+  1041→  statuses TEXT[] := ARRAY['present', 'present', 'present', 'present', 'absent', 'late', 'leave'];
+  1042→  rand_idx INT;
+  1043→BEGIN
+  1044→  FOR d_offset IN 0..6 LOOP
+  1045→    d_date := to_char(current_date - d_offset, 'YYYY-MM-DD');
+  1046→    FOR stu IN SELECT id FROM students WHERE school_id = '00000000-0000-0000-0000-000000000001' LOOP
+  1047→      rand_idx := (random() * 6 + 1)::INT;
+  1048→      INSERT INTO student_attendance (student_id, date, status, marked_by)
+  1049→      VALUES (stu.id, d_date, statuses[rand_idx]::attendance_status, 'system')
+  1050→      ON CONFLICT (student_id, date) DO NOTHING;
+  1051→    END LOOP;
+  1052→  END LOOP;
+  1053→END $$;
+  1054→
+  1055→-- 11.9 FEE STRUCTURES (one per class)
+  1056→DO $$
+  1057→DECLARE
+  1058→  cls RECORD;
+  1059→  total_amt DECIMAL;
+  1060→  class_num INT;
+  1061→BEGIN
+  1062→  FOR cls IN SELECT id, name FROM classes WHERE school_id = '00000000-0000-0000-0000-000000000001' LOOP
+  1063→    -- Extract class number from name like "Class 10"
+  1064→    class_num := 0;
+  1065→    IF cls.name LIKE 'Class %' AND cls.name ~ '[0-9]+' THEN
+  1066→      class_num := substring(cls.name FROM '[0-9]+')::INT;
+  1067→    END IF;
+  1068→    -- Base fee 45000 + 1000 per class number
+  1069→    total_amt := 45000 + (class_num * 1000);
+  1070→    INSERT INTO fee_structures (name, class_id, school_id, term, total_amount, due_date)
+  1071→    VALUES (cls.name || ' - Annual Fee 2024-25', cls.id, '00000000-0000-0000-0000-000000000001', 'Annual', total_amt, '2024-12-31')
+  1072→    ON CONFLICT DO NOTHING;
+  1073→  END LOOP;
+  1074→END $$;
+  1075→
+  1076→-- 11.10 STUDENT FEES (assign fee structure to each student)
+  1077→DO $$
+  1078→DECLARE
+  1079→  stu RECORD;
+  1080→  fs RECORD;
+  1081→  paid_amt DECIMAL;
+  1082→  due_amt DECIMAL;
+  1083→  fee_st fee_status;
+  1084→BEGIN
+  1085→  FOR stu IN SELECT id, class_id FROM students WHERE school_id = '00000000-0000-0000-0000-000000000001' LOOP
+  1086→    SELECT * INTO fs FROM fee_structures WHERE class_id = stu.class_id LIMIT 1;
+  1087→    IF FOUND THEN
+  1088→      -- Random: 50% fully paid, 50% half paid
+  1089→      IF random() > 0.5 THEN
+  1090→        paid_amt := fs.total_amount;
+  1091→      ELSE
+  1092→        paid_amt := fs.total_amount * 0.5;
+  1093→      END IF;
+  1094→      due_amt := fs.total_amount - paid_amt;
+  1095→      
+  1096→      IF due_amt = 0 THEN
+  1097→        fee_st := 'paid'::fee_status;
+  1098→      ELSIF paid_amt > 0 THEN
+  1099→        fee_st := 'partial'::fee_status;
+  1100→      ELSE
+  1101→        fee_st := 'pending'::fee_status;
+  1102→      END IF;
+  1103→      
+  1104→      INSERT INTO student_fees (student_id, fee_structure_id, total_amount, paid_amount, due_amount, due_date, status)
+  1105→      VALUES (stu.id, fs.id, fs.total_amount, paid_amt, due_amt, fs.due_date, fee_st)
+  1106→      ON CONFLICT DO NOTHING;
+  1107→    END IF;
+  1108→  END LOOP;
+  1109→END $$;
+  1110→
+  1111→-- 11.11 LIBRARY BOOKS (10 books)
+  1112→INSERT INTO library_books (title, author, isbn, category, publisher, total_copies, available_copies, shelf_location, school_id) VALUES
+  1113→  ('The Great Gatsby', 'F. Scott Fitzgerald', '9780743273565', 'Fiction', 'Scribner', 5, 3, 'A-12', '00000000-0000-0000-0000-000000000001'),
+  1114→  ('To Kill a Mockingbird', 'Harper Lee', '9780061120084', 'Fiction', 'HarperCollins', 4, 2, 'A-15', '00000000-0000-0000-0000-000000000001'),
+  1115→  ('A Brief History of Time', 'Stephen Hawking', '9780553380163', 'Science', 'Bantam', 3, 3, 'B-08', '00000000-0000-0000-0000-000000000001'),
+  1116→  ('Wings of Fire', 'A.P.J. Abdul Kalam', '9788173711466', 'Biography', 'Universities Press', 6, 5, 'C-03', '00000000-0000-0000-0000-000000000001'),
+  1117→  ('The Alchemist', 'Paulo Coelho', '9780061122415', 'Fiction', 'HarperOne', 4, 3, 'A-20', '00000000-0000-0000-0000-000000000001'),
+  1118→  ('Mathematics for Class 10', 'R.D. Sharma', '9789388700001', 'Textbook', 'Dhanpat Rai', 10, 8, 'D-05', '00000000-0000-0000-0000-000000000001'),
+  1119→  ('Physics Principles', 'H.C. Verma', '9788177091874', 'Textbook', 'Bharati Bhawan', 8, 6, 'D-10', '00000000-0000-0000-0000-000000000001'),
+  1120→  ('Indian History', 'Bipin Chandra', '9788125036842', 'History', 'Orient Blackswan', 3, 2, 'E-02', '00000000-0000-0000-0000-000000000001'),
+  1121→  ('Programming in Python', 'Mark Lutz', '9781449355739', 'Technology', 'O''Reilly', 4, 4, 'F-01', '00000000-0000-0000-0000-000000000001'),
+  1122→  ('Organic Chemistry', 'Morrison Boyd', '9788131705099', 'Science', 'Pearson', 3, 2, 'B-15', '00000000-0000-0000-0000-000000000001');
+  1123→
+  1124→-- 11.12 TRANSPORT ROUTES (5 routes)
+  1125→INSERT INTO transport_routes (name, stops, fare, school_id) VALUES
+  1126→  ('Route 1 - North Delhi', 'Rohini,Pitampura,Model Town', 1500, '00000000-0000-0000-0000-000000000001'),
+  1127→  ('Route 2 - South Delhi', 'Saket,Malviya Nagar,Pushp Vihar', 1800, '00000000-0000-0000-0000-000000000001'),
+  1128→  ('Route 3 - East Delhi', 'Preet Vihar,Vikas Marg,Mayur Vihar', 1600, '00000000-0000-0000-0000-000000000001'),
+  1129→  ('Route 4 - West Delhi', 'Janakpuri,Rajouri Garden,Punjabi Bagh', 1700, '00000000-0000-0000-0000-000000000001'),
+  1130→  ('Route 5 - Noida', 'Sector 18,Sector 62,Atta Market', 2000, '00000000-0000-0000-0000-000000000001');
+  1131→
+  1132→-- 11.13 VEHICLES (5 buses)
+  1133→INSERT INTO vehicles (bus_number, driver_name, driver_phone, capacity, route_id, school_id) VALUES
+  1134→  ('DL01B1001', 'Driver Ramesh', '+91 9911111111', 40, (SELECT id FROM transport_routes WHERE name LIKE 'Route 1%' LIMIT 1), '00000000-0000-0000-0000-000000000001'),
+  1135→  ('DL01B1002', 'Driver Suresh', '+91 9922222222', 40, (SELECT id FROM transport_routes WHERE name LIKE 'Route 2%' LIMIT 1), '00000000-0000-0000-0000-000000000001'),
+  1136→  ('DL01B1003', 'Driver Mahesh', '+91 9933333333', 35, (SELECT id FROM transport_routes WHERE name LIKE 'Route 3%' LIMIT 1), '00000000-0000-0000-0000-000000000001'),
+  1137→  ('DL01B1004', 'Driver Ganesh', '+91 9944444444', 40, (SELECT id FROM transport_routes WHERE name LIKE 'Route 4%' LIMIT 1), '00000000-0000-0000-0000-000000000001'),
+  1138→  ('DL01B1005', 'Driver Dinesh', '+91 9955555555', 45, (SELECT id FROM transport_routes WHERE name LIKE 'Route 5%' LIMIT 1), '00000000-0000-0000-0000-000000000001');
+  1139→
+  1140→-- 11.14 NOTICES (5 notices)
+  1141→INSERT INTO notices (title, content, target_audience, posted_by, date, school_id) VALUES
+  1142→  ('Annual Day Celebration', 'The school''s Annual Day will be celebrated on 25th December. All students must participate.', 'all'::notice_audience, 'Rajesh Kumar', to_char(current_date, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
+  1143→  ('Parent-Teacher Meeting', 'PTM scheduled for this Saturday from 9 AM to 12 PM.', 'all'::notice_audience, 'Rajesh Kumar', to_char(current_date, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
+  1144→  ('Fee Payment Reminder', 'Parents are reminded that the last date for fee payment is 31st December.', 'all'::notice_audience, 'Deepak Mehta', to_char(current_date, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
+  1145→  ('Diwali Holiday', 'School will remain closed for Diwali. Classes resume after break.', 'all'::notice_audience, 'Rajesh Kumar', to_char(current_date, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
+  1146→  ('Science Exhibition', 'Annual Science Exhibition on 20th November. Submit project ideas by 10th.', 'all'::notice_audience, 'Suresh Patel', to_char(current_date, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001');
+  1147→
+  1148→-- 11.15 EVENTS (5 events)
+  1149→INSERT INTO school_events (title, description, date, end_date, type, school_id) VALUES
+  1150→  ('Annual Day', 'Annual cultural function and prize distribution', '2024-12-25', NULL, 'function'::event_type, '00000000-0000-0000-0000-000000000001'),
+  1151→  ('Diwali Break', 'Diwali holidays', '2024-11-10', '2024-11-15', 'holiday'::event_type, '00000000-0000-0000-0000-000000000001'),
+  1152→  ('Mid-Term Exam', 'Mid-term examinations for all classes', '2024-09-15', '2024-09-25', 'exam'::event_type, '00000000-0000-0000-0000-000000000001'),
+  1153→  ('PTM', 'Parent-Teacher Meeting for Class 10', '2024-11-30', NULL, 'ptm'::event_type, '00000000-0000-0000-0000-000000000001'),
+  1154→  ('Sports Day', 'Annual sports day with various athletic events', '2024-11-05', NULL, 'function'::event_type, '00000000-0000-0000-0000-000000000001');
+  1155→
+  1156→-- 11.16 EXAM (Mid-Term for Class 10)
+  1157→INSERT INTO exams (name, type, school_id, class_id, start_date, end_date, max_marks)
+  1158→VALUES ('Mid-Term Examination 2024', 'mid_term'::exam_type, '00000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-00000000000d', '2024-09-15', '2024-09-25', 100);
+  1159→
+  1160→-- 11.17 EXAM RESULTS (for Class 10 students, 5 subjects each)
+  1161→DO $$
+  1162→DECLARE
+  1163→  stu RECORD;
+  1164→  subj RECORD;
+  1165→  marks INT;
+  1166→  grade_val TEXT;
+  1167→BEGIN
+  1168→  FOR stu IN SELECT id FROM students WHERE class_id = 'a0000000-0000-0000-0000-00000000000d' LOOP
+  1169→    FOR subj IN SELECT id FROM subjects WHERE school_id = '00000000-0000-0000-0000-000000000001' ORDER BY code LIMIT 5 LOOP
+  1170→      marks := 55 + (random() * 45)::INT;
+  1171→      grade_val := CASE
+  1172→        WHEN marks >= 90 THEN 'A+'
+  1173→        WHEN marks >= 80 THEN 'A'
+  1174→        WHEN marks >= 70 THEN 'B+'
+  1175→        WHEN marks >= 60 THEN 'B'
+  1176→        WHEN marks >= 50 THEN 'C'
+  1177→        ELSE 'D'
+  1178→      END;
+  1179→      INSERT INTO exam_results (exam_id, student_id, subject_id, marks_obtained, max_marks, grade)
+  1180→      VALUES ((SELECT id FROM exams WHERE name = 'Mid-Term Examination 2024' LIMIT 1), stu.id, subj.id, marks, 100, grade_val)
+  1181→      ON CONFLICT (exam_id, student_id, subject_id) DO NOTHING;
+  1182→    END LOOP;
+  1183→  END LOOP;
+  1184→END $$;
+  1185→
+  1186→-- 11.18 HOMEWORK (5 assignments)
+  1187→INSERT INTO homework (class_id, section_id, subject_id, staff_id, title, description, due_date, school_id) VALUES
+  1188→  ('a0000000-0000-0000-0000-00000000000d', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000d' AND name='A' LIMIT 1), 'b0000000-0000-0000-0000-000000000002', 'c0000000-0000-0000-0000-000000000003', 'Algebra - Quadratic Equations', 'Solve exercises 4.1 to 4.5 from textbook.', to_char(current_date + 7, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
+  1189→  ('a0000000-0000-0000-0000-00000000000c', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000c' AND name='A' LIMIT 1), 'b0000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-000000000005', 'Essay - My Favorite Book', 'Write a 500-word essay on your favorite book.', to_char(current_date + 5, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
+  1190→  ('a0000000-0000-0000-0000-00000000000b', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000b' AND name='A' LIMIT 1), 'b0000000-0000-0000-0000-000000000003', 'c0000000-0000-0000-0000-000000000004', 'Science Project - Photosynthesis', 'Create a diagram showing the process of photosynthesis.', to_char(current_date + 10, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
+  1191→  ('a0000000-0000-0000-0000-00000000000d', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000d' AND name='A' LIMIT 1), 'b0000000-0000-0000-0000-000000000004', 'c0000000-0000-0000-0000-000000000006', 'History - Independence Movement', 'Research 3 key events in India''s independence movement.', to_char(current_date + 7, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001'),
+  1192→  ('a0000000-0000-0000-0000-00000000000a', (SELECT id FROM sections WHERE class_id='a0000000-0000-0000-0000-00000000000a' AND name='A' LIMIT 1), 'b0000000-0000-0000-0000-000000000005', 'c0000000-0000-0000-0000-000000000007', 'Hindi - Kabir ke Dohe', 'Memorize 5 dohe by Kabir and write their meaning.', to_char(current_date + 4, 'YYYY-MM-DD'), '00000000-0000-0000-0000-000000000001');
+  1193→
+  1194→-- 11.19 STAFF LEAVES (5 leave requests)
+  1195→INSERT INTO staff_leaves (staff_id, from_date, to_date, reason, type, status, approved_by) VALUES
+  1196→  ('c0000000-0000-0000-0000-000000000003', '2024-11-01', '2024-11-03', 'Medical leave', 'sick'::leave_type, 'approved'::leave_status, 'Rajesh Kumar'),
+  1197→  ('c0000000-0000-0000-0000-000000000004', '2024-11-10', '2024-11-12', 'Personal work', 'casual'::leave_type, 'approved'::leave_status, 'Rajesh Kumar'),
+  1198→  ('c0000000-0000-0000-0000-000000000005', '2024-11-15', '2024-11-16', 'Family function', 'casual'::leave_type, 'pending'::leave_status, NULL),
+  1199→  ('c0000000-0000-0000-0000-000000000006', '2024-11-20', '2024-11-22', 'Not well', 'sick'::leave_type, 'pending'::leave_status, NULL),
+  1200→  ('c0000000-0000-0000-0000-000000000007', '2024-11-25', '2024-11-26', 'Personal', 'casual'::leave_type, 'rejected'::leave_status, 'Rajesh Kumar');
+  1201→
+  1202→-- 11.20 PAYROLLS (current month for all staff)
+  1203→DO $$
+  1204→DECLARE
+  1205→  stf RECORD;
+  1206→  basic DECIMAL;
+  1207→  allow DECIMAL;
+  1208→  deduct DECIMAL;
+  1209→  net DECIMAL;
+  1210→BEGIN
+  1211→  FOR stf IN SELECT id, salary FROM staff WHERE school_id = '00000000-0000-0000-0000-000000000001' LOOP
+  1212→    basic := stf.salary;
+  1213→    allow := basic * 0.20;
+  1214→    deduct := basic * 0.12;
+  1215→    net := basic + allow - deduct;
+  1216→    INSERT INTO payrolls (staff_id, month, year, basic_salary, allowances, deductions, net_salary, status)
+  1217→    VALUES (stf.id, EXTRACT(MONTH FROM current_date)::INT, EXTRACT(YEAR FROM current_date)::INT, basic, allow, deduct, net, 'pending'::payroll_status)
+  1218→    ON CONFLICT (staff_id, month, year) DO NOTHING;
+  1219→  END LOOP;
+  1220→END $$;
+  1221→
+  1222→-- ============================================================================
+  1223→-- DONE! 🎉
+  1224→-- ============================================================================
+  1225→-- ✅ 28 tables created
+  1226→-- ✅ 14 enums (custom types)
+  1227→-- ✅ 119 RLS policies (role-based access control)
+  1228→-- ✅ 5 triggers (auto-update timestamps + auto-create profile on signup)
+  1229→-- ✅ 14 indexes (query performance)
+  1230→-- ✅ 5 storage buckets (student-photos, staff-photos, book-covers, homework-attachments, documents)
+  1231→-- ✅ Seed data: 1 school, 15 classes, 30 sections, 12 subjects, 12 staff, 10 students,
+  1232→--    7 days attendance, 15 fee structures + student fees, 10 library books, 5 transport routes,
+  1233→--    5 vehicles, 5 notices, 5 events, 1 exam + results, 5 homework, 5 staff leaves, 12 payrolls
+  1234→--
+  1235→-- NEXT STEPS:
+  1236→-- 1. Go to Supabase Dashboard → Authentication → Users → Add User
+  1237→--    Email: superadmin@eduflow.com (or any email you want)
+  1238→--    Password: (set a strong password)
+  1239→-- 2. Run this in SQL Editor to make the user a super admin:
+  1240→--    UPDATE profiles SET role = 'super_admin', name = 'Super Admin' WHERE email = 'superadmin@eduflow.com';
+  1241→-- 3. Login to the app with that email + password
+  1242→-- 4. Go to User Management module to add more users!
+  1243→-- ============================================================================
+  1244→
