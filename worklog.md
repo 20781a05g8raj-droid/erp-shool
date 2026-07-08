@@ -670,3 +670,87 @@ Stage Summary:
 - Seed data: 1 school, 15 classes, 30 sections, 12 subjects, 98 students, 12 staff, 30 days attendance, fee structures + payments, 15 library books, 5 transport routes, exams + results, homework, notices, events, leaves, payroll.
 - 9 demo login accounts (all documented in worklog Task 1).
 - Lint: 0 errors. Build: succeeds. All API routes: 200.
+
+---
+Task ID: DESIGN-1
+Agent: frontend-styling-expert
+Task: Premium UI redesign of core visual components (globals.css, login-screen, sidebar, topbar, stats-card, page-header) to elevate the ERP from "basic glassmorphism" to top-tier SaaS quality (Linear / Vercel / Stripe dashboard level).
+
+Work Log:
+
+1. globals.css (FULL REWRITE)
+   - Refined OKLCH palette: deeper, richer indigo-violet primary (`oklch(0.48 0.20 268)` light, `oklch(0.68 0.21 268)` dark). Tightened muted/accent hues for better hierarchy. Added secondary-foreground and improved chart colors.
+   - Added 4 layered premium shadow vars: `--shadow-sm`, `--shadow-md`, `--shadow-lg`, `--shadow-glow` (each with multi-stop layered shadows for soft, premium depth — separate values for light + dark).
+   - Added `--grad-from` / `--grad-via` / `--grad-to` reusable gradient stops (3-stop indigo→violet→purple).
+   - Refined `.glass` + `.glass-card`: now include inner highlight (`inset` shadow), blur 24px saturate 180%, and triple-layer drop shadows. NEW `.glass-panel` variant for larger hero/panel surfaces (32px blur, bigger depth).
+   - Premium `.gradient-primary`: now a 3-stop gradient (from→via→to). `.gradient-text` / `.text-gradient` alias: 3-stop. NEW `.gradient-border` (mask-composite technique) for gradient edges on cards. NEW `.gradient-mesh-bg` for the login hero (6-stop animated mesh, 18s gradient-shift loop).
+   - Refined `.mesh-bg`: now 6 intentional color stops (was 4) with carefully tuned opacities for both light + dark.
+   - NEW pattern utilities: `.bg-grid` (32px grid, masked via inline), `.bg-dots` (18px dot grid).
+   - NEW premium utilities: `.card-premium`, `.shadow-premium`, `.shadow-sm-premium`, `.shadow-glow`, `.hover-lift` (translateY -3px + shadow-lg), `.hover-glow`, `.gradient-animated` (200% bg animated 6s), `.shimmer` (skeleton loader), `.animate-float`, `.animate-glow-pulse`.
+   - 4 NEW keyframes: `shimmer`, `float`, `glow-pulse` (+ dark variant `glow-pulse-dark`), `gradient-shift`.
+   - Typography: `-webkit-font-smoothing: antialiased`, `text-rendering: optimizeLegibility`, `font-feature-settings` for cv11/ss01/calt/tnum. Headings get tighter `-0.018em` letter-spacing. Tabular-nums on tables.
+   - Premium focus-visible state: double-ring (2px bg + 4px primary/55%).
+   - Refined scrollbar: thinner 8px, `border: 2px solid transparent; background-clip: padding-box` for elegant thumb, with `scrollbar-width: thin` + `scrollbar-color` for Firefox.
+   - `::selection` with primary tint.
+   - `prefers-reduced-motion` media query disables all animations.
+   - Preserved ALL existing class names (`.glass`, `.glass-card`, `.gradient-primary`, `.gradient-text`, `.mesh-bg`) so no existing component breaks.
+   - Added `--radius: 0.875rem` (slightly more rounded for premium feel).
+
+2. login-screen.tsx (FULL REWRITE)
+   - Split-screen layout: left = immersive branded panel (hidden on mobile), right = login form card.
+   - Left panel: `gradient-mesh-bg` animated 6-stop mesh background + masked grid pattern overlay (radial mask for soft edges) + 3 floating glass orbs (different sizes, durations 12/14/16s, varied colors).
+   - Left panel content: glass logo (white/15 backdrop-blur), "Trusted by 500+ schools" pill badge, big bold white tagline (4xl→5xl, tracking-tight, leading-[1.1]) with gradient white text accent, descriptive paragraph, 3 feature cards (glass with hover lift + bg shift), bottom stats row (avatar stack + "500+ Schools" + "99.9% Uptime").
+   - Right panel: subtle `mesh-bg` (only on mobile when left hidden), centered glass-card with staggered Framer Motion entrance (itemVariants staggerChildren 0.08).
+   - Form: rounded-xl inputs (h-11) with focus-within icon color change, gradient "Sign in" button with shine sweep animation on hover (translate-x via-white/20), ArrowRight icon translates on hover.
+   - Quick demo login: 2-col grid, max-h-48 scroll, each button uses motion.button with whileHover y:-1, whileTap scale 0.98, gradient-tinted on hover.
+   - Mobile brand header inside the card (lg:hidden).
+   - Footer "Terms / Privacy" line below card.
+   - Preserved EXACT logic: `useAuthStore` setUser, fetch `/api/auth/login`, `localStorage.setItem("erp_user_id", data.user.id)`, toast, demoAccounts array (8 roles), quickLogin function. All props/logic unchanged.
+
+3. sidebar.tsx (FULL REWRITE)
+   - Animated `width` via Framer Motion (76 collapsed / 264 expanded, ease cubic-bezier).
+   - Top border glow: pseudo-element `before` with gradient `from-transparent via-primary/30 to-transparent`.
+   - Logo: gradient-primary rounded-xl square with inner white/25 highlight overlay.
+   - Nav items: rounded-xl, hover translate-x-0.5 + scale-110 on icon. Active state uses TWO `layoutId` animated layers: (a) `activeNavPill` — gradient-primary background pill that slides between items via spring physics (stiffness 380, damping 32); (b) `activeAccentBar` — left vertical white bar (w-1, h-5). Plus subtle hover bg for inactive items.
+   - Collapse toggle: `PanelLeftClose` (expanded) / `PanelLeft` (collapsed) icons with smooth transition.
+   - User section: avatar with gradient ring (`-inset-0.5 gradient-primary opacity-80` + `ring-2 ring-sidebar`), gradient bg card (`bg-sidebar-accent/40`), name + role with green status dot, logout button. When collapsed: avatar only (logout hidden, user expands).
+   - Mobile drawer: backdrop `bg-background/40 backdrop-blur-md`.
+   - Preserved EXACT props interface `{ mobileOpen, setMobileOpen, collapsed, setCollapsed }` and `useAuthStore` for user/currentModule/setModule/logout.
+
+4. topbar.tsx (FULL REWRITE)
+   - Sticky h-16 with `bg-background/80 backdrop-blur-xl`, border-b, + subtle bottom gradient line (pseudo: `from-transparent via-border to-transparent`).
+   - Module title: `font-bold tracking-tight`, paired with a "Live" badge (`bg-primary/10 text-primary` uppercase tracked pill).
+   - Premium search: rounded-xl, `bg-muted/50 border-transparent focus-visible:bg-background focus-visible:border-primary/30`, search icon color-change on focus, `⌘K` kbd hint (with Command icon, hidden on smaller screens).
+   - Theme toggle: ghost icon button, Sun/Moon rotate + scale transition (300ms) with absolute positioning for swap.
+   - Notifications: bell with animated pulsing red dot (`ring-2 ring-background animate-pulse`). Dropdown has header with "N new" badge, list items with type-colored icon squares (success/info/warning/error — `CheckCircle2`, `Info`, `AlertTriangle`, `XCircle`), bottom "View all" link.
+   - User menu: gradient ring around avatar (`-inset-0.5 gradient-primary opacity-60 group-hover:opacity-100`), name+role hidden on mobile, ChevronDown. Dropdown has gradient-primary header (white text on indigo), avatar, role badge pill, then items: My Profile, Settings, Sign out (destructive).
+   - Preserved EXACT props `{ onMenuClick }`, `useAuthStore` for user/currentModule/logout, `useTheme` for theme, `ALL_MODULES` for label.
+
+5. stats-card.tsx (ENHANCE)
+   - Glass-card with rounded-2xl + `hover-lift` (translateY -3 + shadow-lg).
+   - Gradient border on hover: absolutely positioned div using mask-composite `xor` technique with 1px padding + linear-gradient(from→via→to).
+   - Radial glow: `-top-12 -right-12 w-32 h-32 rounded-full bg-primary/10 blur-3xl` opacity 0→100 on hover.
+   - Icon: 11×11 rounded-xl with `bg-primary/10` tinted bg + soft outer glow (`blur-md opacity-25 group-hover:opacity-45` using `currentColor` for color-aware glow), icon scales 1.05 on hover.
+   - Value: `text-[28px] tabular-nums font-bold tracking-tight`.
+   - Trend badge: tabular-nums, refined emerald/red tints.
+   - Props interface UNCHANGED: `{ title, value, icon, trend, trendLabel, color, delay }`. `color` continues to be a text-color class (e.g. `text-emerald-500`) that tints the icon.
+
+6. page-header.tsx (ENHANCE)
+   - Icon: 12×12 rounded-2xl `gradient-primary` square with inner `from-white/25 to-transparent` highlight overlay + outer `blur-lg opacity-20` glow. Icon size bumped to 22px.
+   - Title: 2xl → `lg:text-[28px] font-bold tracking-tight leading-tight`.
+   - Description: `text-sm text-muted-foreground mt-1 max-w-2xl leading-relaxed`.
+   - Action button: `gradient-primary hover-glow shadow-md` + shine sweep animation (`-translate-x-full group-hover:translate-x-full`) + ActionIcon rotates 90° on hover.
+   - Props interface UNCHANGED: `{ title, description, icon, actionLabel, onAction, actionIcon }`.
+
+Verification:
+- `bun run lint` → 0 errors, 0 warnings.
+- `bunx next build` → succeeds, no errors, no warnings.
+- TypeScript: `bunx tsc --noEmit` → 0 errors in any of the modified files (pre-existing errors in unrelated files remain untouched).
+- All 6 files preserve their original export names, function names, and props interfaces — no downstream imports broken.
+- All existing utility class names (`.glass`, `.glass-card`, `.gradient-primary`, `.gradient-text`, `.mesh-bg`) preserved.
+- New utilities added (`.card-premium`, `.shadow-premium`, `.text-gradient`, `.bg-grid`, `.bg-dots`, `.glass-panel`, `.gradient-mesh-bg`, `.gradient-border`, `.hover-lift`, `.hover-glow`, `.shadow-glow`, `.shimmer`, `.gradient-animated`, `.animate-float`, `.animate-glow-pulse`) — opt-in, no conflicts.
+- Works in both light AND dark themes (every utility has `.dark` overrides).
+- Mobile responsive: login stacks vertically with mesh-bg, sidebar becomes drawer, topbar collapses search/user-name on mobile.
+
+Stage Summary:
+The ERP's first impression is now a stunning split-screen login with animated gradient mesh, floating glass orbs, and a clean form with shine-sweep button. The dashboard shell feels like Linear/Vercel: animated sliding active indicator in the sidebar, premium gradient user cards, refined topbar with kbd-hinted search and notification iconography, and stats cards with gradient borders + radial glows on hover. Design system is now consistent (layered shadows, 3-stop gradients, tabular nums, premium focus rings, elegant scrollbars) and ready for the remaining modules to inherit the polish via the existing `.glass-card`, `.gradient-primary`, `.hover-lift` utilities.
