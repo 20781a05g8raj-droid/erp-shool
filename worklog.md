@@ -960,3 +960,40 @@ Stage Summary:
   - Attendance: has "Staff" tab ✅
   - Staff: has "Add Staff" button ✅
 - Lint: 0 errors
+
+---
+Task ID: SIGNUP-1
+Agent: Main (Z.ai Code)
+Task: Add signup/registration feature — users sign up using email their school registered, role auto-detected.
+
+Work Log:
+- Created /api/auth/signup/route.ts:
+  - Takes email + password + optional name
+  - Checks if profile already exists → 400 "already exists, login instead"
+  - Checks students table by email (student's own email → role=student, parent's email → role=parent)
+  - Checks staff table by email (teaching → teacher, non-teaching by designation: accountant/librarian/transport_manager/hr/school_admin)
+  - If email not in students/staff → 403 "not registered, contact admin"
+  - Creates Profile with detected role, links studentId/staffId, returns user + success message
+- Updated login-screen.tsx with login/signup toggle:
+  - Added mode state ("login" | "signup")
+  - Signup mode shows: Full Name (optional), Email, Password (min 6), Confirm Password
+  - "How it works" info banner explaining the flow
+  - Toggle link: "Don't have an account? Sign up" / "Already have an account? Sign in"
+  - Submit button changes: "Sign in" / "Create account"
+  - Quick demo login only shows in login mode
+- Fixed dashboard API bug: student dashboard crashed when sectionId was null (new students without section assignment). Added null check for sectionId in timetable query.
+
+Stage Summary:
+- API tests:
+  - Signup with unregistered email → 403 ✅
+  - Signup with existing profile email → 400 ✅
+  - Admin adds student with email → student signs up → role=student ✅
+  - Parent email signup → role=parent ✅
+  - Staff email signup → role auto-detected by designation ✅
+- UI tests:
+  - Login page has "Sign up" link ✅
+  - Click "Sign up" → form shows Full Name, Email, Password, Confirm Password ✅
+  - "How it works" banner visible ✅
+  - "Create account" button ✅
+  - Full flow: admin adds Priya → Priya signs up → sees student dashboard ("Good morning, Priya", 0% attendance, Student Portal) ✅
+- Lint: 0 errors

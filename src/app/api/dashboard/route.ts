@@ -334,12 +334,18 @@ async function getStudentDashboard(schoolId: string, studentId: string, viewerRo
     where: { classId: student.classId, schoolId, startDate: { gte: todayStr } },
   });
 
-  // Today's timetable
-  const myTimetableToday = await db.timetableSlot.findMany({
-    where: { classId: student.classId, sectionId: student.sectionId, day: dayName },
-    include: { subject: true, staff: true },
-    orderBy: { period: "asc" },
-  });
+  // Today's timetable (handle null sectionId gracefully)
+  const myTimetableToday = student.classId
+    ? await db.timetableSlot.findMany({
+        where: {
+          classId: student.classId,
+          ...(student.sectionId ? { sectionId: student.sectionId } : {}),
+          day: dayName,
+        },
+        include: { subject: true, staff: true },
+        orderBy: { period: "asc" },
+      })
+    : [];
 
   // Notices for this student
   const recentNotices = await db.notice.findMany({

@@ -50,6 +50,9 @@ export function LoginScreen() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [signupName, setSignupName] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,22 +60,44 @@ export function LoginScreen() {
       toast.error("Please enter both email and password");
       return;
     }
+
+    // Signup-specific validations
+    if (mode === "signup") {
+      if (password.length < 6) {
+        toast.error("Password must be at least 6 characters");
+        return;
+      }
+      if (password !== confirmPassword) {
+        toast.error("Passwords do not match");
+        return;
+      }
+    }
+
     setSubmitting(true);
     try {
-      const res = await fetch("/api/auth/login", {
+      const endpoint = mode === "login" ? "/api/auth/login" : "/api/auth/signup";
+      const body: Record<string, string> = { email, password };
+      if (mode === "signup" && signupName.trim()) {
+        body.name = signupName.trim();
+      }
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) {
-        toast.error(data.error || "Login failed");
+        toast.error(data.error || `${mode === "login" ? "Login" : "Signup"} failed`);
         return;
       }
       // Store user ID in localStorage for iframe/preview compatibility (third-party cookie workaround)
       localStorage.setItem("erp_user_id", data.user.id);
       setUser(data.user);
-      toast.success(`Welcome back, ${data.user.name}!`);
+      if (mode === "signup") {
+        toast.success(data.message || `Account created! Welcome, ${data.user.name}!`);
+      } else {
+        toast.success(`Welcome back, ${data.user.name}!`);
+      }
     } catch {
       toast.error("Network error. Please try again.");
     } finally {
@@ -81,8 +106,16 @@ export function LoginScreen() {
   };
 
   const quickLogin = (demoEmail: string, demoPassword: string) => {
+    setMode("login");
     setEmail(demoEmail);
     setPassword(demoPassword);
+  };
+
+  const switchMode = (newMode: "login" | "signup") => {
+    setMode(newMode);
+    setPassword("");
+    setConfirmPassword("");
+    setShowPassword(false);
   };
 
   return (
@@ -259,13 +292,56 @@ export function LoginScreen() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5, delay: 0.25 }}
             >
-              <h2 className="text-2xl font-bold tracking-tight">Welcome back</h2>
+              <h2 className="text-2xl font-bold tracking-tight">
+                {mode === "login" ? "Welcome back" : "Create your account"}
+              </h2>
               <p className="text-sm text-muted-foreground mt-1">
-                Sign in to access your dashboard
+                {mode === "login"
+                  ? "Sign in to access your dashboard"
+                  : "Sign up using the email your school registered for you"}
               </p>
             </motion.div>
 
+            {/* Signup info banner */}
+            {mode === "signup" && (
+              <motion.div
+                initial={{ opacity: 0, y: -5 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mt-4 p-3 rounded-xl bg-primary/5 border border-primary/15 text-xs text-muted-foreground leading-relaxed"
+              >
+                <strong className="text-foreground">How it works:</strong> Your school admin
+                adds you as a student, parent, teacher, or staff member with your email. Then
+                you sign up here using that same email — we'll automatically detect your role
+                and show you the right dashboard.
+              </motion.div>
+            )}
+
             <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+              {mode === "signup" && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.5, delay: 0.28 }}
+                  className="space-y-1.5"
+                >
+                  <Label htmlFor="name" className="text-xs font-medium text-muted-foreground">
+                    Full Name <span className="text-muted-foreground/60">(optional)</span>
+                  </Label>
+                  <div className="relative group">
+                    <GraduationCap className="absolute left-3.5 top-1/2 -translate-y-1/2 w-[18px] h-[18px] text-muted-foreground group-focus-within:text-primary transition-colors" />
+                    <Input
+                      id="name"
+                      type="text"
+                      placeholder="Your full name"
+                      value={signupName}
+                      onChange={(e) => setSignupName(e.target.value)}
+                      className="pl-10 h-11 rounded-xl bg-background/60 border-border/70 transition-all focus-visible:bg-background"
+                      autoComplete="name"
+                    />
+                  </div>
+                </motion.div>
+              )}
+
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -299,23 +375,25 @@ export function LoginScreen() {
                   <Label htmlFor="password" className="text-xs font-medium text-muted-foreground">
                     Password
                   </Label>
-                  <button
-                    type="button"
-                    className="text-xs text-primary hover:underline font-medium"
-                  >
-                    Forgot password?
-                  </button>
+                  {mode === "login" && (
+                    <button
+                      type="button"
+                      className="text-xs text-primary hover:underline font-medium"
+                    >
+                      Forgot password?
+                    </button>
+                  )}
                 </div>
                 <div className="relative group">
                   <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-[18px] h-[18px] text-muted-foreground group-focus-within:text-primary transition-colors" />
                   <Input
                     id="password"
                     type={showPassword ? "text" : "password"}
-                    placeholder="Enter your password"
+                    placeholder={mode === "signup" ? "Min 6 characters" : "Enter your password"}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     className="pl-10 pr-10 h-11 rounded-xl bg-background/60 border-border/70 transition-all focus-visible:bg-background"
-                    autoComplete="current-password"
+                    autoComplete={mode === "signup" ? "new-password" : "current-password"}
                   />
                   <button
                     type="button"
@@ -327,6 +405,31 @@ export function LoginScreen() {
                   </button>
                 </div>
               </motion.div>
+
+              {mode === "signup" && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.5, delay: 0.44 }}
+                  className="space-y-1.5"
+                >
+                  <Label htmlFor="confirmPassword" className="text-xs font-medium text-muted-foreground">
+                    Confirm Password
+                  </Label>
+                  <div className="relative group">
+                    <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-[18px] h-[18px] text-muted-foreground group-focus-within:text-primary transition-colors" />
+                    <Input
+                      id="confirmPassword"
+                      type={showPassword ? "text" : "password"}
+                      placeholder="Re-enter your password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      className="pl-10 h-11 rounded-xl bg-background/60 border-border/70 transition-all focus-visible:bg-background"
+                      autoComplete="new-password"
+                    />
+                  </div>
+                </motion.div>
+              )}
 
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
@@ -342,11 +445,11 @@ export function LoginScreen() {
                   {submitting ? (
                     <>
                       <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Signing in...
+                      {mode === "login" ? "Signing in..." : "Creating account..."}
                     </>
                   ) : (
                     <>
-                      Sign in
+                      {mode === "login" ? "Sign in" : "Create account"}
                       <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-0.5 transition-transform" />
                     </>
                   )}
@@ -354,7 +457,40 @@ export function LoginScreen() {
               </motion.div>
             </form>
 
-            {/* Quick demo login */}
+            {/* Login / Signup toggle */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.5, delay: 0.52 }}
+              className="mt-5 text-center text-sm"
+            >
+              {mode === "login" ? (
+                <p className="text-muted-foreground">
+                  Don&apos;t have an account?{" "}
+                  <button
+                    type="button"
+                    onClick={() => switchMode("signup")}
+                    className="text-primary font-semibold hover:underline"
+                  >
+                    Sign up
+                  </button>
+                </p>
+              ) : (
+                <p className="text-muted-foreground">
+                  Already have an account?{" "}
+                  <button
+                    type="button"
+                    onClick={() => switchMode("login")}
+                    className="text-primary font-semibold hover:underline"
+                  >
+                    Sign in
+                  </button>
+                </p>
+              )}
+            </motion.div>
+
+            {/* Quick demo login — only in login mode */}
+            {mode === "login" && (
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
@@ -387,6 +523,7 @@ export function LoginScreen() {
                 ))}
               </div>
             </motion.div>
+            )}
           </Card>
 
           {/* Footer */}
