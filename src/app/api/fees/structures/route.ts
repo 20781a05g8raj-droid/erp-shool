@@ -24,12 +24,14 @@ export async function GET() {
 
   // Compute studentFees count for each structure
   const structures = await Promise.all(
-    (structuresRaw || []).map(async (s: Record<string, unknown>) => {
+    (structuresRaw || []).map(async (s: any) => {
       const { count } = await supabaseAdmin
         .from("student_fees")
         .select("*", { count: "exact", head: true })
         .eq("fee_structure_id", s.id as string);
       s._count = { studentFees: count || 0 };
+      s.class = s.classes;
+      s.items = s.fee_items || [];
       return s;
     })
   );
@@ -105,8 +107,14 @@ export async function POST(req: Request) {
       structure.fee_items = insertedItems || [];
     }
 
+    const structureWithCompat = {
+      ...structure,
+      class: structure.classes,
+      items: structure.fee_items || [],
+    };
+
     return NextResponse.json(
-      { structure: toCamelCase(structure as Record<string, unknown>) },
+      { structure: toCamelCase(structureWithCompat as Record<string, unknown>) },
       { status: 201 }
     );
   } catch {

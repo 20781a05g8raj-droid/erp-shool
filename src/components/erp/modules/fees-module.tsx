@@ -45,6 +45,7 @@ import {
   History,
   CheckCircle,
   X,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthStore } from "@/store/auth";
@@ -149,6 +150,7 @@ interface PaymentRow {
   transactionId: string | null;
   collectedBy: string | null;
   remarks: string | null;
+  status: string;
 }
 
 interface StudentFeeRow {
@@ -1084,6 +1086,13 @@ export function FeesModule() {
             <ReceiptsTable
               rows={allPayments}
               onOpenReceipt={handleOpenReceipt}
+              onApprovalChanged={() => {
+                fetchStudentFees();
+                if (activeTab === "ledger") fetchLedger();
+                if (activeTab === "defaulters") fetchDefaulters();
+                if (activeTab === "reports") fetchReport();
+                refreshCurrent();
+              }}
             />
           )}
         </TabsContent>
@@ -1122,6 +1131,23 @@ export function FeesModule() {
         onOpenChange={setDetailsDialogOpen}
         target={detailsTarget}
         onOpenReceipt={handleOpenReceipt}
+        onApprovalChanged={async () => {
+          if (detailsTarget) {
+            try {
+              const data = await apiFetch<{ studentFee: StudentFeeRow }>(
+                `/api/fees/${detailsTarget.id}`
+              );
+              if (data.studentFee) setDetailsTarget(data.studentFee);
+            } catch (err) {
+              console.error(err);
+            }
+          }
+          fetchStudentFees();
+          if (activeTab === "ledger") fetchLedger();
+          if (activeTab === "defaulters") fetchDefaulters();
+          if (activeTab === "reports") fetchReport();
+          refreshCurrent();
+        }}
       />
 
       <LedgerHistoryDialog
@@ -1826,6 +1852,9 @@ function RecordPaymentDialog({
   target: StudentFeeRow | null;
   onSaved: () => void;
 }) {
+  const { user } = useAuthStore();
+  const isStudentOrParent = user?.role === "student" || user?.role === "parent";
+
   const [amount, setAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [paymentDate, setPaymentDate] = useState(
@@ -1837,11 +1866,11 @@ function RecordPaymentDialog({
   useEffect(() => {
     if (open && target) {
       setAmount(String(target.dueAmount));
-      setPaymentMethod("cash");
+      setPaymentMethod(isStudentOrParent ? "online" : "cash");
       setPaymentDate(new Date().toISOString().split("T")[0]);
       setRemarks("");
     }
-  }, [open, target]);
+  }, [open, target, isStudentOrParent]);
 
   if (!target) return null;
 
@@ -1850,7 +1879,7 @@ function RecordPaymentDialog({
   const exceeds = payAmount > target.dueAmount;
 
   const handleSave = async () => {
-    if (!target) return;
+    if (!target || saving) return;
     if (payAmount <= 0) {
       toast.error("Enter a valid amount");
       return;
@@ -1932,16 +1961,20 @@ function RecordPaymentDialog({
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>Payment Method</Label>
-              <Select value={paymentMethod} onValueChange={setPaymentMethod}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="cash">Cash</SelectItem>
-                  <SelectItem value="online">Online</SelectItem>
-                  <SelectItem value="cheque">Cheque</SelectItem>
-                </SelectContent>
-              </Select>
+              {isStudentOrParent ? (
+                <Input value="Online Payment" disabled className="bg-muted text-foreground" />
+              ) : (
+                <Select value={paymentMethod} onValueChange={setPaymentMethod}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cash">Cash</SelectItem>
+                    <SelectItem value="online">Online</SelectItem>
+                    <SelectItem value="cheque">Cheque</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label>Payment Date</Label>
@@ -1949,6 +1982,7 @@ function RecordPaymentDialog({
                 type="date"
                 value={paymentDate}
                 onChange={(e) => setPaymentDate(e.target.value)}
+                disabled={isStudentOrParent}
               />
             </div>
           </div>
@@ -1987,14 +2021,38 @@ function StudentFeeDetailsDialog({
   onOpenChange,
   target,
   onOpenReceipt,
+  onApprovalChanged,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   target: StudentFeeRow | null;
   onOpenReceipt: (paymentId: string) => void;
+  onApprovalChanged?: () => void;
 }) {
+  const { user } = useAuthStore();
+  const isStaff = ["school_admin", "super_admin", "accountant"].includes(user?.role || "");
+  const [processing, setProcessing] = useState<string | null>(null);
+
   if (!target) return null;
+
+  const handleApproval = async (paymentId: string, action: "approve" | "reject") => {
+    setProcessing(paymentId);
+    try {
+      await apiFetch(`/api/fees/payments/${paymentId}`, {
+        method: "PUT",
+        body: JSON.stringify({ action }),
+      });
+      toast.success(`Payment ${action === "approve" ? "approved" : "rejected"} successfully.`);
+      if (onApprovalChanged) onApprovalChanged();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : `Failed to ${action} payment`);
+    } finally {
+      setProcessing(null);
+    }
+  };
+
   const fullName = `${target.student.firstName} ${target.student.lastName}`;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
@@ -2054,34 +2112,76 @@ function StudentFeeDetailsDialog({
               </div>
             ) : (
               <div className="space-y-2 max-h-60 overflow-y-auto">
-                {target.payments.map((p) => (
-                  <div
-                    key={p.id}
-                    className="flex items-center justify-between rounded-lg border p-2.5 text-sm"
-                  >
-                    <div>
-                      <div className="font-mono text-xs">{p.receiptNumber}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {formatDate(p.paymentDate)} ·{" "}
-                        {PAYMENT_METHOD_LABELS[p.paymentMethod] || p.paymentMethod}
-                        {p.collectedBy ? ` · by ${p.collectedBy}` : ""}
+                {target.payments.map((p) => {
+                  const status = p.status || "approved";
+                  const isPending = status === "pending";
+                  const isProcessing = processing === p.id;
+
+                  return (
+                    <div
+                      key={p.id}
+                      className="flex items-center justify-between rounded-lg border p-2.5 text-sm"
+                    >
+                      <div>
+                        <div className="font-mono text-xs">{p.receiptNumber}</div>
+                        <div className="text-xs text-muted-foreground animate-fadeIn">
+                          {formatDate(p.paymentDate)} ·{" "}
+                          {PAYMENT_METHOD_LABELS[p.paymentMethod] || p.paymentMethod}
+                          {p.collectedBy ? ` · by ${p.collectedBy}` : ""}
+                        </div>
+                        <div className="mt-1">
+                          <Badge
+                            className={
+                              status === "approved"
+                                ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20 text-[10px] h-5"
+                                : status === "rejected"
+                                ? "bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/20 text-[10px] h-5"
+                                : "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20 text-[10px] h-5"
+                            }
+                            variant="outline"
+                          >
+                            {status === "pending" ? "Pending Approval" : status.charAt(0).toUpperCase() + status.slice(1)}
+                          </Badge>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-emerald-600">
+                          {formatCurrency(p.amount)}
+                        </span>
+                        {isPending && isStaff && (
+                          <div className="flex gap-1">
+                            <Button
+                              size="sm"
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white h-7 text-xs px-2"
+                              onClick={() => handleApproval(p.id, "approve")}
+                              disabled={isProcessing}
+                            >
+                              Approve
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              className="h-7 text-xs px-2"
+                              onClick={() => handleApproval(p.id, "reject")}
+                              disabled={isProcessing}
+                            >
+                              Reject
+                            </Button>
+                          </div>
+                        )}
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7"
+                          onClick={() => onOpenReceipt(p.id)}
+                          disabled={isProcessing}
+                        >
+                          <ReceiptIcon className="w-3.5 h-3.5" />
+                        </Button>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold text-emerald-600">
-                        {formatCurrency(p.amount)}
-                      </span>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7"
-                        onClick={() => onOpenReceipt(p.id)}
-                      >
-                        <ReceiptIcon className="w-3.5 h-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -2994,10 +3094,32 @@ function CollectionReportTab({
 function ReceiptsTable({
   rows,
   onOpenReceipt,
+  onApprovalChanged,
 }: {
   rows: { payment: PaymentRow; studentFee: StudentFeeRow }[];
   onOpenReceipt: (paymentId: string) => void;
+  onApprovalChanged?: () => void;
 }) {
+  const { user } = useAuthStore();
+  const isStaff = ["school_admin", "super_admin", "accountant"].includes(user?.role || "");
+  const [processing, setProcessing] = useState<string | null>(null);
+
+  const handleApproval = async (paymentId: string, action: "approve" | "reject") => {
+    setProcessing(paymentId);
+    try {
+      await apiFetch(`/api/fees/payments/${paymentId}`, {
+        method: "PUT",
+        body: JSON.stringify({ action }),
+      });
+      toast.success(`Payment ${action === "approve" ? "approved" : "rejected"} successfully.`);
+      if (onApprovalChanged) onApprovalChanged();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : `Failed to ${action} payment`);
+    } finally {
+      setProcessing(null);
+    }
+  };
+
   return (
     <Card className="glass-card p-0 overflow-hidden">
       <Table>
@@ -3009,48 +3131,94 @@ function ReceiptsTable({
             <TableHead>Method</TableHead>
             <TableHead>Date</TableHead>
             <TableHead className="text-right">Amount</TableHead>
+            <TableHead>Status</TableHead>
             <TableHead className="text-right">Action</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {rows.map(({ payment, studentFee }) => (
-            <TableRow key={payment.id}>
-              <TableCell className="font-mono text-xs">
-                {payment.receiptNumber}
-              </TableCell>
-              <TableCell>
-                <div className="font-medium">
-                  {studentFee.student.firstName} {studentFee.student.lastName}
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  {studentFee.student.admissionNumber}
-                </div>
-              </TableCell>
-              <TableCell>
-                <Badge variant="outline">
-                  {studentFee.student.class?.name || "—"}
-                </Badge>
-              </TableCell>
-              <TableCell>
-                <Badge variant="secondary" className="text-xs">
-                  {PAYMENT_METHOD_LABELS[payment.paymentMethod] || payment.paymentMethod}
-                </Badge>
-              </TableCell>
-              <TableCell className="text-sm">{formatDate(payment.paymentDate)}</TableCell>
-              <TableCell className="text-right font-semibold text-emerald-600">
-                {formatCurrency(payment.amount)}
-              </TableCell>
-              <TableCell className="text-right">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => onOpenReceipt(payment.id)}
-                >
-                  <ReceiptIcon className="w-3.5 h-3.5 mr-1.5" /> View
-                </Button>
-              </TableCell>
-            </TableRow>
-          ))}
+          {rows.map(({ payment, studentFee }) => {
+            const status = payment.status || "approved";
+            const isPending = status === "pending";
+            const isProcessing = processing === payment.id;
+
+            return (
+              <TableRow key={payment.id}>
+                <TableCell className="font-mono text-xs">
+                  {payment.receiptNumber}
+                </TableCell>
+                <TableCell>
+                  <div className="font-medium">
+                    {studentFee.student.firstName} {studentFee.student.lastName}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {studentFee.student.admissionNumber}
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <Badge variant="outline">
+                    {studentFee.student.class?.name || "—"}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  <Badge variant="secondary" className="text-xs">
+                    {PAYMENT_METHOD_LABELS[payment.paymentMethod] || payment.paymentMethod}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-sm">{formatDate(payment.paymentDate)}</TableCell>
+                <TableCell className="text-right font-semibold text-emerald-600">
+                  {formatCurrency(payment.amount)}
+                </TableCell>
+                <TableCell>
+                  <Badge
+                    className={
+                      status === "approved"
+                        ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20"
+                        : status === "rejected"
+                        ? "bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/20"
+                        : "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20"
+                    }
+                    variant="outline"
+                  >
+                    {status === "pending" ? "Pending Approval" : status.charAt(0).toUpperCase() + status.slice(1)}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-right">
+                  <div className="flex items-center justify-end gap-2">
+                    {isPending && isStaff && (
+                      <>
+                        <Button
+                          size="sm"
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white h-8"
+                          onClick={() => handleApproval(payment.id, "approve")}
+                          disabled={isProcessing}
+                        >
+                          {isProcessing ? <Loader2 className="w-3 h-3 animate-spin" /> : "Approve"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          className="h-8"
+                          onClick={() => handleApproval(payment.id, "reject")}
+                          disabled={isProcessing}
+                        >
+                          Reject
+                        </Button>
+                      </>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8"
+                      onClick={() => onOpenReceipt(payment.id)}
+                      disabled={isProcessing}
+                    >
+                      <ReceiptIcon className="w-3.5 h-3.5 mr-1.5" /> View
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            );
+          })}
         </TableBody>
       </Table>
     </Card>

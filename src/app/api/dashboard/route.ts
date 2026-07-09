@@ -171,17 +171,19 @@ async function getAdminDashboard(schoolId: string, role: string) {
     .eq("school_id", schoolId)
     .order("order", { ascending: true });
 
+  // Class distribution - optimized to run in parallel
   const allClasses = allClassesRaw ?? [];
-  const classDistribution: { name: string; count: number }[] = [];
-  for (const cls of allClasses) {
-    const { count } = await supabaseAdmin
-      .from("students")
-      .select("*", { count: "exact", head: true })
-      .eq("class_id", cls.id)
-      .eq("status", "active");
-    const c = count ?? 0;
-    if (c > 0) classDistribution.push({ name: cls.name, count: c });
-  }
+  const classDistributions = await Promise.all(
+    allClasses.map(async (cls) => {
+      const { count } = await supabaseAdmin
+        .from("students")
+        .select("*", { count: "exact", head: true })
+        .eq("class_id", cls.id)
+        .eq("status", "active");
+      return { name: cls.name, count: count ?? 0 };
+    })
+  );
+  const classDistribution = classDistributions.filter((c) => c.count > 0);
 
   // Today's attendance rate
   const todayRecords = attendanceByDate[todayStr] ?? [];

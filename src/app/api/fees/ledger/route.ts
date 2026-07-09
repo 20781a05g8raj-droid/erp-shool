@@ -151,10 +151,15 @@ export async function GET(req: Request) {
               (1000 * 60 * 60 * 24)
           )
         : 0;
+    const student = toCamelCase(sf.students as Record<string, unknown>) as any;
+    if (student) {
+      student.class = student.classes;
+      student.section = student.sections;
+    }
     return {
       id: sf.id,
       studentId: sf.student_id,
-      student: toCamelCase(sf.students as Record<string, unknown>),
+      student,
       feeStructure: toCamelCase(sf.fee_structures as Record<string, unknown>),
       totalAmount: sf.total_amount,
       paidAmount: sf.paid_amount,

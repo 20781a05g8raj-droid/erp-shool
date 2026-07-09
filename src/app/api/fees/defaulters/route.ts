@@ -131,9 +131,14 @@ export async function GET(req: Request) {
       else if (daysOverdue > 7) severityBucket = "overdue";
       else severityBucket = "pending";
 
+      const student = toCamelCase(sf.students as Record<string, unknown>) as any;
+      if (student) {
+        student.class = student.classes;
+        student.section = student.sections;
+      }
       return {
         id: sf.id,
-        student: toCamelCase(sf.students as Record<string, unknown>),
+        student,
         feeStructure: toCamelCase(sf.fee_structures as Record<string, unknown>),
         totalAmount: sf.total_amount,
         paidAmount: sf.paid_amount,

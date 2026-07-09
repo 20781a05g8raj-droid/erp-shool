@@ -111,7 +111,7 @@ export async function GET(req: Request) {
   }
 
   // Sort payments desc by payment_date for each fee
-  const sorted = (studentFeesRaw || []).map((sf: Record<string, unknown>) => {
+  const sorted = (studentFeesRaw || []).map((sf: any) => {
     const payments = (sf.fee_payments as Array<Record<string, unknown>>) || [];
     payments.sort((a, b) => {
       const pa = (a.payment_date as string) || "";
@@ -119,6 +119,15 @@ export async function GET(req: Request) {
       return pb.localeCompare(pa);
     });
     sf.fee_payments = payments;
+
+    // Map relations for frontend compatibility
+    sf.student = sf.students;
+    if (sf.student) {
+      sf.student.class = sf.students.classes;
+      sf.student.section = sf.students.sections;
+    }
+    sf.feeStructure = sf.fee_structures;
+    sf.payments = sf.fee_payments || [];
     return sf;
   });
 

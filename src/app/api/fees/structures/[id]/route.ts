@@ -85,8 +85,14 @@ export async function PUT(
       structure.fee_items = insertedItems || [];
     }
 
+    const structureWithCompat = {
+      ...structure,
+      class: structure.classes,
+      items: structure.fee_items || [],
+    };
+
     return NextResponse.json({
-      structure: toCamelCase(structure as Record<string, unknown>),
+      structure: toCamelCase(structureWithCompat as Record<string, unknown>),
     });
   } catch {
     return NextResponse.json(

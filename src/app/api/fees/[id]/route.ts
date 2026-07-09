@@ -45,7 +45,18 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  return NextResponse.json({ studentFee: toCamelCase(studentFee) });
+  const studentFeeWithCompat = {
+    ...studentFee,
+    student: studentFee.students,
+    feeStructure: studentFee.fee_structures,
+    payments: studentFee.fee_payments || [],
+  };
+  if (studentFeeWithCompat.student) {
+    (studentFeeWithCompat.student as any).class = (studentFee.students as any).classes;
+    (studentFeeWithCompat.student as any).section = (studentFee.students as any).sections;
+  }
+
+  return NextResponse.json({ studentFee: toCamelCase(studentFeeWithCompat as Record<string, unknown>) });
 }
 
 // PUT — update student fee (rare: e.g. adjust total/due date)
@@ -125,7 +136,18 @@ export async function PUT(
     });
     updated.fee_payments = payments;
 
-    return NextResponse.json({ studentFee: toCamelCase(updated) });
+    const updatedWithCompat = {
+      ...updated,
+      student: updated.students,
+      feeStructure: updated.fee_structures,
+      payments: updated.fee_payments || [],
+    };
+    if (updatedWithCompat.student) {
+      (updatedWithCompat.student as any).class = (updated.students as any).classes;
+      (updatedWithCompat.student as any).section = (updated.students as any).sections;
+    }
+
+    return NextResponse.json({ studentFee: toCamelCase(updatedWithCompat as Record<string, unknown>) });
   } catch {
     return NextResponse.json(
       { error: "Failed to update student fee" },

@@ -5,24 +5,27 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 export async function GET() {
   try {
     let userId: string | null = null;
-
-    // 1. Try Supabase session
+    // 1. Try x-user-id header first
     try {
-      const { createSupabaseServerClient } = await import("@/lib/supabase/server");
-      const supabase = await createSupabaseServerClient();
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        userId = session.user.id;
-      }
+      const { headers } = await import("next/headers");
+      const headerStore = await headers();
+      userId = headerStore.get("x-user-id");
     } catch {
       // ignore
     }
 
-    // 2. Fallback to x-user-id header
+    // 2. Fallback to Supabase session client
     if (!userId) {
-      const { headers } = await import("next/headers");
-      const headerStore = await headers();
-      userId = headerStore.get("x-user-id");
+      try {
+        const { createSupabaseServerClient } = await import("@/lib/supabase/server");
+        const supabase = await createSupabaseServerClient();
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          userId = session.user.id;
+        }
+      } catch {
+        // ignore
+      }
     }
 
     if (!userId) return NextResponse.json({ user: null });

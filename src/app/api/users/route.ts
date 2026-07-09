@@ -139,17 +139,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Email already in use" }, { status: 400 });
     }
 
-    // Generate a UUID for the new profile (profiles.id auto-defaults to uuid_generate_v4(),
-    // but we pass an explicit one to be safe across all schema versions.)
-    const { v4: uuidv4 } = await import("uuid");
-    const profileId = uuidv4();
+    // 1. Create the user in Supabase Auth
+    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+      email: normalizedEmail,
+      password: password,
+      email_confirm: true,
+    });
 
-    const { data, error } = await supabaseAdmin
+    if (authError || !authData.user) {
+      console.error("Create auth user error:", authError);
+      return NextResponse.json({ error: authError?.message || "Failed to create auth user" }, { status: 500 });
+    }
+
+    // 2. The trigger `on_auth_user_created` in schema.sql will automatically insert a row in `profiles`.
+    // We update that row with the additional metadata.
+    const { data: profile, error: profileError } = await supabaseAdmin
       .from("profiles")
-      .insert({
-        id: profileId,
-        email: normalizedEmail,
-        password: `demo:${password}`,
+      .update({
         name: name.trim(),
         role,
         phone: phone?.trim() || null,
@@ -158,18 +164,43 @@ export async function POST(req: NextRequest) {
         status: status || "active",
         school_id: user.schoolId,
       })
+      .eq("id", authData.user.id)
       .select(`
         id, email, name, role, phone, status,
         student_id, staff_id, created_at
       `)
       .single();
 
-    if (error || !data) {
-      console.error("Create user error:", error);
-      return NextResponse.json({ error: "Failed to create user" }, { status: 500 });
+    if (profileError || !profile) {
+      // Fallback: If update failed (e.g. if the trigger didn't fire or ran into issues), try to insert manually
+      const { data: insertedProfile, error: insertError } = await supabaseAdmin
+        .from("profiles")
+        .insert({
+          id: authData.user.id,
+          email: normalizedEmail,
+          name: name.trim(),
+          role,
+          phone: phone?.trim() || null,
+          student_id: studentId || null,
+          staff_id: staffId || null,
+          status: status || "active",
+          school_id: user.schoolId,
+        })
+        .select(`
+          id, email, name, role, phone, status,
+          student_id, staff_id, created_at
+        `)
+        .single();
+
+      if (insertError || !insertedProfile) {
+        console.error("Create profile error:", profileError || insertError);
+        return NextResponse.json({ error: "Auth user created but profile setup failed" }, { status: 500 });
+      }
+
+      return NextResponse.json({ user: toCamelCase(insertedProfile) }, { status: 201 });
     }
 
-    return NextResponse.json({ user: toCamelCase(data) }, { status: 201 });
+    return NextResponse.json({ user: toCamelCase(profile) }, { status: 201 });
   } catch (error) {
     console.error("Create user error:", error);
     return NextResponse.json({ error: "Failed to create user" }, { status: 500 });

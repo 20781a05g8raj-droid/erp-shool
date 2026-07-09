@@ -138,6 +138,36 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: error?.message || "Failed to create student" }, { status: 500 });
     }
 
+    // Auto-assign fee structures if classId is specified
+    if (body.classId) {
+      try {
+        const { data: feeStructures } = await supabaseAdmin
+          .from("fee_structures")
+          .select("id, total_amount, due_date")
+          .eq("class_id", body.classId)
+          .eq("school_id", schoolId);
+
+        if (feeStructures && feeStructures.length > 0) {
+          const studentFeesInserts = feeStructures.map((fs) => ({
+            student_id: data.id,
+            fee_structure_id: fs.id,
+            total_amount: fs.total_amount || 0,
+            paid_amount: 0,
+            due_amount: fs.total_amount || 0,
+            status: "pending",
+            due_date: fs.due_date,
+          }));
+
+          await supabaseAdmin
+            .from("student_fees")
+            .insert(studentFeesInserts);
+        }
+      } catch (feeErr) {
+        console.error("Failed to auto-assign student fees:", feeErr);
+        // Do not fail student creation if fee assignment fails
+      }
+    }
+
     return NextResponse.json(toCamelCase(data), { status: 201 });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create student";

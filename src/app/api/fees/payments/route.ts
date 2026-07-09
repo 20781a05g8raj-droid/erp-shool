@@ -91,6 +91,9 @@ export async function POST(req: Request) {
     }
     const receiptNumber = `${prefix}-${String(seq).padStart(5, "0")}`;
 
+    const isStudentOrParent = user.role === "student" || user.role === "parent";
+    const paymentStatus = isStudentOrParent ? "pending" : "approved";
+
     const { data: payment, error: payError } = await supabaseAdmin
       .from("fee_payments")
       .insert({
@@ -103,18 +106,30 @@ export async function POST(req: Request) {
         transaction_id: transactionId || null,
         collected_by: user.name,
         remarks: remarks || null,
+        status: paymentStatus,
       })
       .select("*")
       .single();
 
     if (payError || !payment) {
+      console.error("Pay insert error:", payError);
       return NextResponse.json(
         { error: "Failed to record payment" },
         { status: 500 }
       );
     }
 
-    // Update studentFee
+    if (isStudentOrParent) {
+      return NextResponse.json(
+        {
+          payment: toCamelCase(payment as Record<string, unknown>),
+          message: "Payment recorded successfully and is pending approval.",
+        },
+        { status: 201 }
+      );
+    }
+
+    // Update studentFee (Admin / Accountant only)
     const newPaid = (studentFee.paid_amount as number) + payAmount;
     const newDue = Math.max(0, (studentFee.total_amount as number) - newPaid);
     const newStatus = computeStatus(

@@ -23,24 +23,27 @@ function normalizeProfile(p: Record<string, unknown> | null): User | null {
 export async function getCurrentUser(): Promise<User | null> {
   try {
     let userId: string | null = null;
-
-    // 1. Try Supabase session first
+    // 1. Try x-user-id header first (very fast, doesn't require importing & instantiating server client)
     try {
-      const { createSupabaseServerClient } = await import("./supabase/server");
-      const supabase = await createSupabaseServerClient();
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        userId = session.user.id;
-      }
-    } catch {
-      // Session check failed, continue to fallback
-    }
-
-    // 2. Fallback to x-user-id header (for iframe/preview compatibility)
-    if (!userId) {
       const { headers } = await import("next/headers");
       const headerStore = await headers();
       userId = headerStore.get("x-user-id");
+    } catch {
+      // Ignore header retrieval failure
+    }
+
+    // 2. Fallback to Supabase session client if no header found
+    if (!userId) {
+      try {
+        const { createSupabaseServerClient } = await import("./supabase/server");
+        const supabase = await createSupabaseServerClient();
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          userId = session.user.id;
+        }
+      } catch {
+        // Session check failed
+      }
     }
 
     if (!userId) return null;

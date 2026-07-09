@@ -73,12 +73,23 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
     );
   }
 
+  // 1. If password is provided, update it in Supabase Auth
+  if (password) {
+    const { error: authError } = await supabaseAdmin.auth.admin.updateUserById(id, {
+      password: password,
+    });
+    if (authError) {
+      console.error("Update auth password error:", authError);
+      return NextResponse.json({ error: authError.message }, { status: 500 });
+    }
+  }
+
+  // 2. Update remaining fields in profiles table
   const updateData: Record<string, unknown> = {};
   if (name !== undefined) updateData.name = name.trim();
   if (role !== undefined) updateData.role = role;
   if (phone !== undefined) updateData.phone = phone?.trim() || null;
   if (status !== undefined) updateData.status = status;
-  if (password) updateData.password = `demo:${password}`;
   if (studentId !== undefined) updateData.student_id = studentId || null;
   if (staffId !== undefined) updateData.staff_id = staffId || null;
 
@@ -129,8 +140,12 @@ export async function DELETE(_req: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  const { error } = await supabaseAdmin.from("profiles").delete().eq("id", id);
+  // Delete the user from Supabase Auth.
+  // Because profiles.id has a foreign key referencing auth.users(id) with ON DELETE CASCADE,
+  // deleting from auth.users will automatically delete the corresponding profile.
+  const { error } = await supabaseAdmin.auth.admin.deleteUser(id);
   if (error) {
+    console.error("Delete user error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 

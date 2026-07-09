@@ -34,12 +34,12 @@ export async function POST(req: NextRequest) {
       password,
     }).catch(() => ({ data: { user: null, session: null }, error: null }));
 
-    // Check if profile already exists
-    const { data: existingProfile } = await supabase
+    // Check if profile already exists (use admin client to bypass RLS)
+    const { data: existingProfile } = await admin
       .from("profiles")
       .select("id")
       .eq("email", normalizedEmail)
-      .single();
+      .maybeSingle();
 
     if (existingProfile) {
       return NextResponse.json(
@@ -55,18 +55,23 @@ export async function POST(req: NextRequest) {
     let staffId: string | null = null;
     let displayName = name?.trim() || "";
 
-    // 1. Check students table (student's own email OR parent's email)
-    const { data: student } = await supabase
+    // 1. Check students table (student's own email OR parent's email) (use admin client to bypass RLS)
+    const { data: students } = await admin
       .from("students")
       .select("id, first_name, last_name, email, parent_email, school_id")
       .or(`email.eq.${normalizedEmail},parent_email.eq.${normalizedEmail}`)
       .eq("status", "active")
-      .single();
+      .limit(1);
+
+    const student = students && students.length > 0 ? students[0] : null;
 
     if (student) {
-      if (student.email === normalizedEmail) {
+      const studentEmail = (student.email || "").toLowerCase().trim();
+      const parentEmail = (student.parent_email || "").toLowerCase().trim();
+
+      if (studentEmail === normalizedEmail) {
         role = "student";
-      } else if (student.parent_email === normalizedEmail) {
+      } else if (parentEmail === normalizedEmail) {
         role = "parent";
       }
       schoolId = student.school_id;
@@ -78,14 +83,16 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 2. If not found in students, check staff table
+    // 2. If not found in students, check staff table (use admin client to bypass RLS)
     if (!role) {
-      const { data: staff } = await supabase
+      const { data: staffList } = await admin
         .from("staff")
         .select("id, first_name, last_name, email, designation, type, school_id")
         .eq("email", normalizedEmail)
         .eq("status", "active")
-        .single();
+        .limit(1);
+
+      const staff = staffList && staffList.length > 0 ? staffList[0] : null;
 
       if (staff) {
         schoolId = staff.school_id;
