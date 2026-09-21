@@ -2,14 +2,8 @@
 // Uses service role key — NEVER expose to browser!
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-if (!supabaseUrl || !serviceRoleKey) {
-  throw new Error(
-    "Missing Supabase env vars. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env"
-  );
-}
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://eyrykqvsbgsqwvqbfazw.supabase.co";
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV5cnlrcXZzYmdzcXd2cWJmYXp3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MzUxMzIyMSwiZXhwIjoyMDk5MDg5MjIxfQ.ENe1bhIhz4xUKMLFN8dkuojbJCi7u8YdeKSgLOsaVH0";
 
 export const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
   auth: {

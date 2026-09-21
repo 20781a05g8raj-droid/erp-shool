@@ -5,10 +5,12 @@ import { cookies } from "next/headers";
 
 export async function createSupabaseServerClient() {
   const cookieStore = await cookies();
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://eyrykqvsbgsqwvqbfazw.supabase.co";
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_yLrJYPAOGjfnbObtl8Kr0A_Gxxzqje6";
 
   return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    url,
+    anonKey,
     {
       cookies: {
         getAll() {
@@ -33,12 +35,10 @@ export async function createSupabaseServerClient() {
 import { createClient } from "@supabase/supabase-js";
 
 export function createSupabaseAdminClient() {
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!serviceRoleKey) {
-    throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY env var");
-  }
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://eyrykqvsbgsqwvqbfazw.supabase.co";
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV5cnlrcXZzYmdzcXd2cWJmYXp3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MzUxMzIyMSwiZXhwIjoyMDk5MDg5MjIxfQ.ENe1bhIhz4xUKMLFN8dkuojbJCi7u8YdeKSgLOsaVH0";
   return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    url,
     serviceRoleKey,
     {
       auth: {

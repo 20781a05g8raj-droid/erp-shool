@@ -15,9 +15,10 @@ import { toast } from "sonner";
 import { ROLE_LABELS } from "@/types";
 
 const demoAccounts = [
-  { role: "school_admin", email: "admin@greenwood.edu", password: "admin123" },
+  { role: "super_admin", email: "superadmin@eduflow.com", password: "erpshool123" },
+  { role: "school_admin", email: "20781a05g8raj@gmail.com", password: "erpshool123" },
+  { role: "student", email: "diya.das@gmail.com", password: "student123" },
   { role: "teacher", email: "anita.verma@greenwood.edu", password: "teacher123" },
-  { role: "student", email: "diya.das@student.greenwood.edu", password: "student123" },
   { role: "parent", email: "parent.diya@gmail.com", password: "parent123" },
   { role: "accountant", email: "deepak.mehta@greenwood.edu", password: "account123" },
   { role: "librarian", email: "lakshmi.iyer@greenwood.edu", password: "library123" },
@@ -46,8 +47,8 @@ const features = [
 
 export function LoginScreen() {
   const { setUser } = useAuthStore();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [email, setEmail] = useState("superadmin@eduflow.com");
+  const [password, setPassword] = useState("erpshool123");
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [mode, setMode] = useState<"login" | "signup">("login");
