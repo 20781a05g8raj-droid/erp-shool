@@ -4,7 +4,7 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import {
   GraduationCap, Mail, Lock, ArrowRight, Eye, EyeOff, Loader2,
-  ShieldCheck, Users, TrendingUp, Sparkles, CheckCircle2,
+  ShieldCheck, Users, TrendingUp, CheckCircle2,
 } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import { Button } from "@/components/ui/button";
@@ -12,19 +12,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { toast } from "sonner";
-import { ROLE_LABELS } from "@/types";
-
-const demoAccounts = [
-  { role: "super_admin", email: "superadmin@eduflow.com", password: "erpshool123" },
-  { role: "school_admin", email: "20781a05g8raj@gmail.com", password: "erpshool123" },
-  { role: "student", email: "diya.das@gmail.com", password: "student123" },
-  { role: "teacher", email: "anita.verma@greenwood.edu", password: "teacher123" },
-  { role: "parent", email: "parent.diya@gmail.com", password: "parent123" },
-  { role: "accountant", email: "deepak.mehta@greenwood.edu", password: "account123" },
-  { role: "librarian", email: "lakshmi.iyer@greenwood.edu", password: "library123" },
-  { role: "transport_manager", email: "ramesh.yadav@greenwood.edu", password: "transport123" },
-  { role: "hr", email: "sunita.joshi@greenwood.edu", password: "hr123" },
-] as const;
 
 const containerStagger = {
   hidden: { opacity: 0 },
@@ -47,8 +34,8 @@ const features = [
 
 export function LoginScreen() {
   const { setUser } = useAuthStore();
-  const [email, setEmail] = useState("superadmin@eduflow.com");
-  const [password, setPassword] = useState("erpshool123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [mode, setMode] = useState<"login" | "signup">("login");
@@ -104,12 +91,6 @@ export function LoginScreen() {
     } finally {
       setSubmitting(false);
     }
-  };
-
-  const quickLogin = (demoEmail: string, demoPassword: string) => {
-    setMode("login");
-    setEmail(demoEmail);
-    setPassword(demoPassword);
   };
 
   const switchMode = (newMode: "login" | "signup") => {
@@ -489,42 +470,6 @@ export function LoginScreen() {
                 </p>
               )}
             </motion.div>
-
-            {/* Quick demo login — only in login mode */}
-            {mode === "login" && (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5, delay: 0.56 }}
-              className="mt-6 pt-6 border-t border-border/60"
-            >
-              <div className="flex items-center gap-2 mb-3">
-                <Sparkles className="w-3.5 h-3.5 text-primary" />
-                <p className="text-xs font-medium text-muted-foreground">
-                  Quick demo login — click a role
-                </p>
-              </div>
-              <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1 -mr-1">
-                {demoAccounts.map((acc) => (
-                  <motion.button
-                    key={acc.role}
-                    onClick={() => quickLogin(acc.email, acc.password)}
-                    whileHover={{ y: -1 }}
-                    whileTap={{ scale: 0.98 }}
-                    transition={{ duration: 0.15 }}
-                    className="text-left px-3 py-2 rounded-lg border border-border/60 bg-background/40 hover:bg-accent/60 hover:border-primary/30 transition-all text-xs group"
-                  >
-                    <div className="font-semibold text-primary group-hover:text-primary">
-                      {ROLE_LABELS[acc.role]}
-                    </div>
-                    <div className="text-[10px] text-muted-foreground truncate">
-                      {acc.email}
-                    </div>
-                  </motion.button>
-                ))}
-              </div>
-            </motion.div>
-            )}
           </Card>
 
           {/* Footer */}
