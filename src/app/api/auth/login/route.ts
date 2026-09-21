@@ -1,6 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { createClient } from "@supabase/supabase-js";
+
+const supabaseUrl =
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  "https://eyrykqvsbgsqwvqbfazw.supabase.co";
+const supabaseAnonKey =
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  "sb_publishable_yLrJYPAOGjfnbObtl8Kr0A_Gxxzqje6";
+
+// Client for credential verification without SSR cookie locks
+const authClient = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false,
+  },
+});
 
 // POST /api/auth/login — login using Supabase Auth
 export async function POST(req: NextRequest) {
@@ -15,61 +30,64 @@ export async function POST(req: NextRequest) {
     }
 
     const cleanEmail = email.toLowerCase().trim();
+
+    // 1. Authenticate user credentials directly
     let authUser: { id: string } | null = null;
-    let authError: string | null = null;
+    let authErrorMsg: string | null = null;
 
-    // 1. Try server client with cookies
-    try {
-      const supabase = await createSupabaseServerClient();
-      const { data, error } = await supabase.auth.signInWithPassword({
+    const { data: authData, error: authError } =
+      await authClient.auth.signInWithPassword({
         email: cleanEmail,
         password,
       });
-      if (data?.user) {
-        authUser = data.user;
-      } else if (error) {
-        authError = error.message;
-      }
-    } catch (err) {
-      console.warn("Server client sign in warning:", err);
-    }
 
-    // 2. Fallback to admin client
-    if (!authUser) {
-      const { data, error } = await supabaseAdmin.auth.signInWithPassword({
-        email: cleanEmail,
-        password,
-      });
-      if (data?.user) {
-        authUser = data.user;
-        authError = null;
-      } else if (error) {
-        authError = error.message;
+    if (authData?.user) {
+      authUser = authData.user;
+    } else {
+      authErrorMsg = authError?.message || null;
+      // Fallback check with admin client
+      const { data: adminAuthData } =
+        await supabaseAdmin.auth.signInWithPassword({
+          email: cleanEmail,
+          password,
+        });
+      if (adminAuthData?.user) {
+        authUser = adminAuthData.user;
+        authErrorMsg = null;
       }
     }
 
     if (!authUser) {
       return NextResponse.json(
-        { error: authError || "Invalid email or password" },
+        { error: authErrorMsg || "Invalid email or password" },
         { status: 401 }
       );
     }
 
-    // 3. Fetch profile using admin client (bypasses RLS)
-    const { data: profile } = await supabaseAdmin
+    // 2. Fetch profile using admin client (bypasses RLS)
+    const { data: profile, error: profileError } = await supabaseAdmin
       .from("profiles")
-      .select("id, email, name, role, school_id, phone, avatar, status, student_id, staff_id")
+      .select(
+        "id, email, name, role, school_id, phone, avatar, status, student_id, staff_id"
+      )
       .eq("id", authUser.id)
       .single();
 
-    if (!profile || profile.status !== "active") {
+    if (profileError || !profile) {
       return NextResponse.json(
-        { error: "Your account has been suspended or profile not found." },
+        { error: "Profile not found for this account. Please contact administrator." },
+        { status: 404 }
+      );
+    }
+
+    if (profile.status !== "active") {
+      return NextResponse.json(
+        { error: "Your account has been suspended. Please contact administrator." },
         { status: 403 }
       );
     }
 
-    // Return camelCase response
+    // Return user profile
     return NextResponse.json({
       user: {
         id: profile.id,
@@ -85,11 +103,9 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : "An error occurred during login";
-    console.error("Login error:", error);
-    return NextResponse.json(
-      { error: msg },
-      { status: 500 }
-    );
+    const msg =
+      error instanceof Error ? error.message : "An error occurred during login";
+    console.error("Login route error:", error);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
