@@ -2,14 +2,8 @@
 // Uses NEXT_PUBLIC_ env vars (safe to expose to browser)
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error(
-    "Missing Supabase env vars. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local"
-  );
-}
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://eyrykqvsbgsqwvqbfazw.supabase.co";
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_yLrJYPAOGjfnbObtl8Kr0A_Gxxzqje6";
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
