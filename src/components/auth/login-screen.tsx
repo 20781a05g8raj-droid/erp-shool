@@ -4,7 +4,7 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import {
   GraduationCap, Mail, Lock, ArrowRight, Eye, EyeOff, Loader2,
-  ShieldCheck, Users, TrendingUp, Sparkles, CheckCircle2,
+  ShieldCheck, Users, TrendingUp, Sparkles, CheckCircle2, AlertCircle,
 } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import { Button } from "@/components/ui/button";
@@ -38,6 +38,7 @@ export function LoginScreen() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [signupName, setSignupName] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -45,23 +46,30 @@ export function LoginScreen() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email || !password) {
-      toast.error("Please enter both email and password");
+      const msg = "Please enter both email and password";
+      setError(msg);
+      toast.error(msg);
       return;
     }
 
     // Signup-specific validations
     if (mode === "signup") {
       if (password.length < 6) {
-        toast.error("Password must be at least 6 characters");
+        const msg = "Password must be at least 6 characters";
+        setError(msg);
+        toast.error(msg);
         return;
       }
       if (password !== confirmPassword) {
-        toast.error("Passwords do not match");
+        const msg = "Passwords do not match";
+        setError(msg);
+        toast.error(msg);
         return;
       }
     }
 
     setSubmitting(true);
+    setError(null);
     try {
       const endpoint = mode === "login" ? "/api/auth/login" : "/api/auth/signup";
       const body: Record<string, string> = { email, password };
@@ -75,7 +83,9 @@ export function LoginScreen() {
       });
       const data = await res.json();
       if (!res.ok) {
-        toast.error(data.error || `${mode === "login" ? "Login" : "Signup"} failed`);
+        const msg = data.error || `${mode === "login" ? "Login" : "Signup"} failed`;
+        setError(msg);
+        toast.error(msg);
         return;
       }
       // Store user ID in localStorage for iframe/preview compatibility (third-party cookie workaround)
@@ -87,7 +97,9 @@ export function LoginScreen() {
         toast.success(`Welcome back, ${data.user.name}!`);
       }
     } catch {
-      toast.error("Network error. Please try again.");
+      const msg = "Network error. Please try again.";
+      setError(msg);
+      toast.error(msg);
     } finally {
       setSubmitting(false);
     }
@@ -95,6 +107,7 @@ export function LoginScreen() {
 
   const switchMode = (newMode: "login" | "signup") => {
     setMode(newMode);
+    setError(null);
     setPassword("");
     setConfirmPassword("");
     setShowPassword(false);
@@ -340,7 +353,10 @@ export function LoginScreen() {
                     type="email"
                     placeholder="you@school.edu"
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      if (error) setError(null);
+                    }}
                     className="pl-10 h-11 rounded-xl bg-background/60 border-border/70 transition-all focus-visible:bg-background"
                     autoComplete="email"
                   />
@@ -373,7 +389,10 @@ export function LoginScreen() {
                     type={showPassword ? "text" : "password"}
                     placeholder={mode === "signup" ? "Min 6 characters" : "Enter your password"}
                     value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      if (error) setError(null);
+                    }}
                     className="pl-10 pr-10 h-11 rounded-xl bg-background/60 border-border/70 transition-all focus-visible:bg-background"
                     autoComplete={mode === "signup" ? "new-password" : "current-password"}
                   />
@@ -405,11 +424,25 @@ export function LoginScreen() {
                       type={showPassword ? "text" : "password"}
                       placeholder="Re-enter your password"
                       value={confirmPassword}
-                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      onChange={(e) => {
+                        setConfirmPassword(e.target.value);
+                        if (error) setError(null);
+                      }}
                       className="pl-10 h-11 rounded-xl bg-background/60 border-border/70 transition-all focus-visible:bg-background"
                       autoComplete="new-password"
                     />
                   </div>
+                </motion.div>
+              )}
+
+              {error && (
+                <motion.div
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="p-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs flex items-center gap-2"
+                >
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{error}</span>
                 </motion.div>
               )}
 

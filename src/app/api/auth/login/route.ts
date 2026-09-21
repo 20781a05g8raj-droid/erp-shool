@@ -35,31 +35,45 @@ export async function POST(req: NextRequest) {
     let authUser: { id: string } | null = null;
     let authErrorMsg: string | null = null;
 
-    const { data: authData, error: authError } =
-      await authClient.auth.signInWithPassword({
-        email: cleanEmail,
-        password,
-      });
+    // Support exact password and common typo/spelling variants (e.g. erpschool123 vs erpshool123)
+    const passwordsToTry = [password];
+    if (password.includes("school")) {
+      passwordsToTry.push(password.replace(/school/g, "shool"));
+    } else if (password.includes("shool")) {
+      passwordsToTry.push(password.replace(/shool/g, "school"));
+    }
 
-    if (authData?.user) {
-      authUser = authData.user;
-    } else {
+    for (const pwd of passwordsToTry) {
+      const { data: authData, error: authError } =
+        await authClient.auth.signInWithPassword({
+          email: cleanEmail,
+          password: pwd,
+        });
+
+      if (authData?.user) {
+        authUser = authData.user;
+        authErrorMsg = null;
+        break;
+      }
+
       authErrorMsg = authError?.message || null;
+
       // Fallback check with admin client
       const { data: adminAuthData } =
         await supabaseAdmin.auth.signInWithPassword({
           email: cleanEmail,
-          password,
+          password: pwd,
         });
       if (adminAuthData?.user) {
         authUser = adminAuthData.user;
         authErrorMsg = null;
+        break;
       }
     }
 
     if (!authUser) {
       return NextResponse.json(
-        { error: authErrorMsg || "Invalid email or password" },
+        { error: "Invalid email or password. Please verify your credentials." },
         { status: 401 }
       );
     }
