@@ -4,7 +4,7 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import {
   GraduationCap, Mail, Lock, ArrowRight, Eye, EyeOff, Loader2,
-  ShieldCheck, Users, TrendingUp, CheckCircle2,
+  ShieldCheck, Users, TrendingUp, Sparkles, CheckCircle2,
 } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import { Button } from "@/components/ui/button";
